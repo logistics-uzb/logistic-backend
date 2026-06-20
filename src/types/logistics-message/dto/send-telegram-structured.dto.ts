@@ -97,14 +97,6 @@ export class SendTelegramStructuredDto {
   @IsString()
   description?: string;
 
-  @ApiPropertyOptional({
-    example: '2026-02-02',
-    description: 'Published date (YYYY-MM-DD)',
-  })
-  @IsOptional()
-  @IsDateString()
-  published_at?: string;
-
   @ApiProperty({
     description: 'Raw message text to send to Telegram groups',
     example: '🔥 Yuk bor! Toshkent → Moskva...',

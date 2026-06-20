@@ -691,52 +691,104 @@ ${text}
   }
 
   async sendToTelegram(body: SendTelegramStructuredDto) {
-    const groups = await this.prisma.telegramGroup.findMany({
-      where: { isActive: true },
-      select: { username: true },
+    // ---------------------------------------------------------------------
+    // Telegram dispatch temporarily disabled — this endpoint currently only
+    // accepts dispatcher input and persists it to the DB as a LOAD_POST.
+    // Re-enable the active-group fetch + Python MTProto call when needed.
+    // ---------------------------------------------------------------------
+    // const groups = await this.prisma.telegramGroup.findMany({
+    //   where: { isActive: true },
+    //   select: { username: true },
+    // });
+    // const groupUsernames = groups.map((g) => g.username).filter(Boolean);
+    // if (groupUsernames.length === 0) {
+    //   throw new BadRequestException('No active telegram groups found');
+    // }
+
+    const message = body.isMessage
+      ? body.message
+      : this.buildTelegramMessage(body as any);
+
+    // Persist the dispatcher-submitted post directly — no classifier, no OpenAI.
+    const saved = await this.persistDispatcherPost(body, message);
+    this.logger.log(`Dispatcher post saved id=${saved.id}`);
+
+    // ---------------------------------------------------------------------
+    // const baseUrl = this.configService.get<string>('PYTHON_TELETHON_API_URL');
+    // if (!baseUrl) {
+    //   throw new BadRequestException('Python service URL is not configured');
+    // }
+    //
+    // try {
+    //   const res = await axios.post(
+    //     `${baseUrl.replace(/\/$/, '')}/mtproto/send`,
+    //     {
+    //       message,
+    //       groups: groupUsernames,
+    //     }
+    //   );
+    //   this.logger.log(
+    //     `Sent to Telegram groups: ${groupUsernames.length} (savedId=${saved.id})`
+    //   );
+    //   return {
+    //     success: true,
+    //     sent: groupUsernames.length,
+    //     savedId: saved.id,
+    //     service: res.data,
+    //   };
+    // } catch (error) {
+    //   this.logger.error(`Failed to send to Telegram: ${error.message}`);
+    //   throw new BadRequestException(
+    //     'Failed to send message to Telegram service'
+    //   );
+    // }
+
+    return { success: true, savedId: saved.id };
+  }
+
+  private async persistDispatcherPost(
+    body: SendTelegramStructuredDto,
+    finalText: string
+  ) {
+    const toNum = (v: unknown): number | undefined =>
+      v != null && v !== '' && !isNaN(Number(v)) ? Number(v) : undefined;
+
+    const isComplete = Boolean(
+      body.countryFrom && body.countryTo && body.regionFrom && body.regionTo
+    );
+
+    return this.prisma.logisticMessage.create({
+      data: {
+        // Sentinels: dispatcher-submitted posts don't come from a Telegram channel.
+        tgMessageId: 0,
+        channelName: 'DISPATCHER',
+        text: finalText,
+        date: new Date(),
+        aiStatus: 'LOAD_POST',
+        structured: body as unknown as Prisma.InputJsonValue,
+        sentToTelegramAt: new Date(),
+
+        countryFrom: body.countryFrom,
+        countryTo: body.countryTo,
+        regionFrom: body.regionFrom,
+        regionTo: body.regionTo,
+
+        title: body.title,
+        weight: toNum(body.weight),
+        cargoUnit: body.cargoUnit,
+        vehicleType: body.vehicleType,
+
+        paymentType: body.paymentType,
+        paymentAmount: toNum(body.paymentAmount),
+        paymentCurrency: body.paymentCurrency,
+
+        pickupDate: body.pickupDate ? new Date(body.pickupDate) : null,
+        phoneNumber: body.phone_number,
+
+        isComplete,
+      },
+      select: { id: true },
     });
-    const groupUsernames = groups.map((g) => g.username).filter(Boolean);
-    if (groupUsernames.length === 0) {
-      throw new BadRequestException('No active telegram groups found');
-    }
-
-    let message: string;
-
-    if (body.isMessage) {
-      message = body.message;
-      console.log(body, 'body', body.isMessage);
-    } else {
-      console.log('else');
-
-      message = this.buildTelegramMessage(body as any);
-    }
-
-    console.log(message, 'message');
-
-    const baseUrl = this.configService.get<string>('PYTHON_TELETHON_API_URL');
-    if (!baseUrl) {
-      throw new BadRequestException('Python service URL is not configured');
-    }
-
-    try {
-      console.log(
-        'Sending to Telegram groups:',
-        groupUsernames,
-        baseUrl.replace(/\/$/, '')
-      );
-
-      const res = await axios.post(`${baseUrl.replace(/\/$/, '')}/mtproto/send`, {
-        message,
-        groups: groupUsernames,
-      });
-      this.logger.log(`Sent to Telegram groups: ${groupUsernames.length}`);
-      return { success: true, sent: groupUsernames.length, service: res.data };
-    } catch (error) {
-      this.logger.error(`Failed to send to Telegram: ${error.message}`);
-      throw new BadRequestException(
-        'Failed to send message to Telegram service'
-      );
-    }
   }
 
   private buildTelegramMessage(body: SendTelegramStructuredDto): string {

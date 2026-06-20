@@ -6,6 +6,7 @@ import {
   dbConfig,
   minioConfig,
   openAIConfig,
+  telegramGatewayConfig,
 } from './common/config/app.config';
 import { MongooseModule } from '@nestjs/mongoose';
 import { APP_FILTER } from '@nestjs/core';
@@ -25,7 +26,7 @@ import { AuthModule } from './modules/auth/auth.module';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      load: [appConfig, dbConfig, minioConfig, openAIConfig, TelegramConfig],
+      load: [appConfig, dbConfig, minioConfig, openAIConfig, TelegramConfig, telegramGatewayConfig],
     }),
     TelegrafModule.forRoot({
       token: process.env.TELEGRAM_BOT_TOKEN,
@@ -39,10 +40,10 @@ import { AuthModule } from './modules/auth/auth.module';
     // }),
     PrismaModule,
     PostsModule,
-    TelegramGroupModule,
-    OpenaiModule,
+    // TelegramGroupModule,
+    // OpenaiModule,
     CronJobModule,
-    TelegramModule,
+    // TelegramModule,
     LogisticsGatewayModule,
     AuthModule,
     // TelegramQueueModule,
