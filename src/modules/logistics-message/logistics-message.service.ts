@@ -93,7 +93,7 @@ export class PostsService {
 
         const updated = await this.prisma.logisticMessage.update({
           where: {
-            id: existing?.id,
+            id: existingText.id,
           },
           data: {
             sentToTelegramAt: new Date(),
@@ -110,13 +110,27 @@ export class PostsService {
       console.log(openaiResponse, 'openaiResponse');
 
 
+      // A "load" must carry a phone number. If the classifier flagged it as a
+      // load but no phone was extracted, downgrade it to a regular message.
+      const rawPhone = openaiResponse?.metaData?.phone_number;
+      const hasPhone =
+        typeof rawPhone === 'string' && rawPhone.trim().length > 0;
+      const effectiveIsLoad =
+        openaiResponse.classifieredMessage.isLoad && hasPhone;
+
+      if (openaiResponse.classifieredMessage.isLoad && !hasPhone) {
+        this.logger.debug(
+          `[${methodName}] Classifier said load but no phone_number — treating as REGULAR_MESSAGE`
+        );
+      }
+
       const baseData: Prisma.LogisticMessageCreateInput = {
         tgMessageId,
         channelName,
         text,
         date,
         views,
-        aiStatus: openaiResponse.classifieredMessage.type,
+        aiStatus: effectiveIsLoad ? 'LOAD_POST' : 'REGULAR_MESSAGE',
         structured: openaiResponse,
         sentToTelegramAt: new Date(),
       };
@@ -130,7 +144,7 @@ export class PostsService {
       this.logger.debug(`[${methodName}] isComplete=${isComplete}`);
       let fullData = baseData;
 
-      if (openaiResponse.classifieredMessage.isLoad) {
+      if (effectiveIsLoad) {
         this.logger.debug(
           `[${methodName}] Load post detected — enriching payload`
         );
@@ -182,7 +196,7 @@ export class PostsService {
       this.logger.log(
         `[${methodName}] Saved successfully id=${savedMessage.id}`
       );
-      if (!isComplete && openaiResponse.classifieredMessage.isLoad) {
+      if (!isComplete && effectiveIsLoad) {
         this.logger.warn(
           `[${methodName}] Incomplete load detected — sending Telegram alert`
         );
@@ -234,12 +248,12 @@ ${text}
         this.logger.debug(`[${methodName}] Telegram alert sent`);
       }
 
-      if (isComplete && openaiResponse.classifieredMessage.isLoad) {
+      if (isComplete && effectiveIsLoad) {
         this.logger.warn(
-          `[${methodName}] Incomplete load detected — sending Telegram alert`
+          `[${methodName}] Complete load detected — sending Telegram alert`
         );
 
-        const incompleteMessageText = `
+        const completeMessageText = `
 *Asl xabar:*
 \`\`\`
 ${text}
@@ -280,7 +294,7 @@ ${text}
 \`\`\`
 `;
 
-        await this.telegramService.sendToGroup(incompleteMessageText, 17903, {
+        await this.telegramService.sendToGroup(completeMessageText, 17903, {
           parseMode: 'Markdown',
         });
         this.logger.debug(`[${methodName}] Telegram alert sent`);
