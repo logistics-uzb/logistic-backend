@@ -44,8 +44,7 @@ jobs:
             npx prisma migrate deploy
 
             echo "▶ Building NestJS..."
-            rm -rf dist
-            npx nest build
+            npm run build
 
             echo "▶ Reloading PM2..."
             pm2 reload logistic-backend --update-env || \
