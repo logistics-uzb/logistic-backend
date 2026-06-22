@@ -1,34 +1,10 @@
-
-version: "3.8"
-
 services:
   nest-app:
     build:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "${APP_PORT}:${APP_PORT}"
-    environment:
-      - WEAVIATE_URL=${WEAVIATE_URL}
-      - WEAVIATE_CLASS_NAME=${WEAVIATE_CLASS_NAME}
-      - APP_PORT=${APP_PORT}
-      - NODE_ENV=${NODE_ENV}
-      - FRONTEND_BASE_URL=${FRONTEND_BASE_URL}
-      - TELEGRAM_BOT_URL=${TELEGRAM_BOT_URL}
-      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
-      - PROXY_HOST=${PROXY_HOST}
-      - PROXY_PORT=${PROXY_PORT}
-      - PROXY_TOKEN=${PROXY_TOKEN}
-      - DATABASE_URL=${DATABASE_URL}
-      - JWT_SECRET=${JWT_SECRET}
-      - MINIO_ENDPOINT=${MINIO_ENDPOINT}
-      - MINIO_PORT=${MINIO_PORT}
-      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
-      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
-      - MINIO_USE_SSL=${MINIO_USE_SSL}
-      - MINIO_URL=${MINIO_URL}
-      - MINIO_PUBLIC_BUCKET=${MINIO_PUBLIC_BUCKET}
-      - RAG_API_URL=${RAG_API_URL}
-      - RAG_API_TOKEN=${RAG_API_TOKEN}
+      - "4001:4001"
+    env_file:
+      - .env
     restart: unless-stopped
-    
