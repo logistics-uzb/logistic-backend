@@ -742,6 +742,108 @@ ${text}
     };
   }
 
+  /**
+   * Run the classifier + OpenAI extraction pipeline on a raw message text
+   * (same as `create()` does for scraped posts) BUT do not persist anything.
+   * Returns a structured payload shaped to drop straight into the body of
+   * POST /v1/post/send-to-telegram so the dispatcher can review / edit / send.
+   */
+  async parseMessage(text: string, dispatcherId?: number) {
+    const tag = `[parseMessage caller=${dispatcherId ?? '-'}]`;
+    const startedAt = Date.now();
+    const elapsed = () => `${Date.now() - startedAt}ms`;
+
+    this.logger.log(`${tag} STEP 1 incoming text_len=${text?.length ?? 0}`);
+
+    const openaiResponse = await this.openaiService.messageAnalyse({
+      message: text,
+    });
+    this.logger.log(
+      `${tag} STEP 2 openai isLoad=${openaiResponse.classifieredMessage.isLoad} type=${openaiResponse.classifieredMessage.type} confidence=${openaiResponse.classifieredMessage.confidence ?? '-'}`
+    );
+
+    const rawPhone = openaiResponse?.metaData?.phone_number;
+    const hasPhone =
+      typeof rawPhone === 'string' && rawPhone.trim().length > 0;
+    const effectiveIsLoad =
+      openaiResponse.classifieredMessage.isLoad && hasPhone;
+
+    const isComplete = Boolean(
+      openaiResponse?.route?.fromCountry &&
+        openaiResponse?.route?.toCountry &&
+        openaiResponse?.route?.fromRegion &&
+        openaiResponse?.route?.toRegion
+    );
+
+    // Translate indexed dictionary keys (e.g. "uzbekistan", "tashkent_city")
+    // back to display names so the response can be dropped straight into
+    // /post/send-to-telegram without further frontend mapping.
+    const [countryFromName, countryToName, regionFromInfo, regionToInfo] =
+      await Promise.all([
+        this.getCountryNameByIndexedName(
+          routeData,
+          openaiResponse?.route?.fromCountry
+        ),
+        this.getCountryNameByIndexedName(
+          routeData,
+          openaiResponse?.route?.toCountry
+        ),
+        this.getRegionInfoByIndexedName(
+          routeData,
+          openaiResponse?.route?.fromRegion
+        ),
+        this.getRegionInfoByIndexedName(
+          routeData,
+          openaiResponse?.route?.toRegion
+        ),
+      ]);
+
+    const normalizedPickup = await this.normalizePickupDate(
+      openaiResponse?.metaData?.pickupDate
+    );
+
+    // Shape matches SendTelegramStructuredDto so the frontend can post it back
+    // unchanged (after the dispatcher edits whatever they want to override).
+    const data = {
+      countryFrom: countryFromName ?? openaiResponse?.route?.fromCountry ?? null,
+      regionFrom:
+        regionFromInfo?.regionName ?? openaiResponse?.route?.fromRegion ?? null,
+      countryTo: countryToName ?? openaiResponse?.route?.toCountry ?? null,
+      regionTo:
+        regionToInfo?.regionName ?? openaiResponse?.route?.toRegion ?? null,
+
+      title: openaiResponse?.metaData?.title ?? null,
+      weight: openaiResponse?.metaData?.weight ?? null,
+      cargoUnit: openaiResponse?.metaData?.cargoUnit ?? null,
+      capacity: null,
+      vehicleType: openaiResponse?.metaData?.vehicleType ?? null,
+      vehicleBodyType: null,
+
+      paymentType: openaiResponse?.metaData?.paymentType ?? null,
+      paymentAmount: openaiResponse?.metaData?.paymentAmount ?? null,
+      paymentCurrency: openaiResponse?.metaData?.paymentCurrency ?? null,
+
+      pickupDate: normalizedPickup
+        ? normalizedPickup.toISOString().slice(0, 10) // YYYY-MM-DD
+        : openaiResponse?.metaData?.pickupDate ?? null,
+
+      phone_number: openaiResponse?.metaData?.phone_number ?? null,
+      description: null,
+    };
+
+    this.logger.log(
+      `${tag} DONE effectiveLoad=${effectiveIsLoad} isComplete=${isComplete} hasPhone=${hasPhone} in ${elapsed()}`
+    );
+
+    return {
+      isLoad: effectiveIsLoad,
+      aiStatus: effectiveIsLoad ? 'LOAD_POST' : 'REGULAR_MESSAGE',
+      isComplete,
+      hasPhone,
+      data,
+    };
+  }
+
   async sendToTelegram(body: SendTelegramStructuredDto, dispatcherId: number) {
     // ---------------------------------------------------------------------
     // Telegram dispatch temporarily disabled — this endpoint currently only
@@ -819,7 +921,7 @@ ${text}
         channelName: 'DISPATCHER',
         text: finalText,
         date: new Date(),
-        aiStatus: 'LOAD_POST',
+        aiStatus: body.aiStatus ?? 'LOAD_POST',
         structured: body as unknown as Prisma.InputJsonValue,
         sentToTelegramAt: new Date(),
 

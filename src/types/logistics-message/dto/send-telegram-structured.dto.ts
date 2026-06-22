@@ -2,6 +2,7 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsBoolean,
   IsDateString,
+  IsIn,
   IsOptional,
   IsString,
   MinLength,
@@ -9,6 +10,16 @@ import {
 } from 'class-validator';
 
 export class SendTelegramStructuredDto {
+  @ApiPropertyOptional({
+    enum: ['LOAD_POST', 'REGULAR_MESSAGE'],
+    default: 'LOAD_POST',
+    description:
+      'Echoed back from /post/ai-analyser. Defaults to LOAD_POST so dispatcher-built loads stay LOAD_POST; pass REGULAR_MESSAGE to broadcast an informational/non-load message.',
+  })
+  @IsOptional()
+  @IsIn(['LOAD_POST', 'REGULAR_MESSAGE'])
+  aiStatus?: 'LOAD_POST' | 'REGULAR_MESSAGE';
+
   @ApiProperty({ example: 'Uzbekistan', description: 'Origin country' })
   @IsString()
   countryFrom: string;

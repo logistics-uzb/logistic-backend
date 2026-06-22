@@ -36,41 +36,40 @@ export class OpenaiService {
     metaData: any;
   }> {
     const classifieredMessage = await this.classifier(message.message);
-    console.log(classifieredMessage);
-    if (classifieredMessage.isLoad) {
-      // const route = await this.extractRoute(classifieredMessage.cleanText);
-      // const metaData = await this.extractMetaData(
-      //   classifieredMessage.cleanText
-      // );
 
-      const data = await this.extractData(message.message);
-
-      console.log(data, 'route, metaData');
-
-      return {
-        classifieredMessage,
-        route: {
-          fromCountry: data.from.country.indexedName,
-          toCountry: data.to.country.indexedName,
-          fromRegion: data.from.region.indexedName,
-          toRegion: data.to.region.indexedName,
-        },
-        metaData: {
-          title: data?.title,
-          weight: data?.weight,
-          cargoUnit: data?.cargoUnit,
-          vehicleType: data?.vehicleType,
-          paymentType: data?.paymentType,
-          paymentAmount: data?.paymentAmount,
-          advancePayment: data?.advancePayment,
-          paymentCurrency: data?.paymentCurrency,
-          pickupDate: data?.pickupDate,
-          phone_number: data?.phone_number,
-        },
-      };
-    } else {
+    if (!classifieredMessage.isLoad) {
       return { classifieredMessage, route: null, metaData: null };
     }
+
+    const data = await this.extractData(message.message);
+
+    // extractData can return:
+    //  - null            (GPT returned from=null && to=null)
+    //  - { from: null, to: null, ... }   (OpenAI call threw — caught & swallowed)
+    //  - a populated object
+    // Guard every access so an OpenAI outage or unparseable text doesn't crash
+    // the whole ingest pipeline.
+    return {
+      classifieredMessage,
+      route: {
+        fromCountry: data?.from?.country?.indexedName ?? null,
+        toCountry: data?.to?.country?.indexedName ?? null,
+        fromRegion: data?.from?.region?.indexedName ?? null,
+        toRegion: data?.to?.region?.indexedName ?? null,
+      },
+      metaData: {
+        title: data?.title ?? null,
+        weight: data?.weight ?? null,
+        cargoUnit: data?.cargoUnit ?? null,
+        vehicleType: data?.vehicleType ?? null,
+        paymentType: data?.paymentType ?? null,
+        paymentAmount: data?.paymentAmount ?? null,
+        advancePayment: data?.advancePayment ?? null,
+        paymentCurrency: data?.paymentCurrency ?? null,
+        pickupDate: data?.pickupDate ?? null,
+        phone_number: data?.phone_number ?? null,
+      },
+    };
   }
 
   // ISCLOSE FUNCTION

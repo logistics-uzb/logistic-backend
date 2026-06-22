@@ -18,7 +18,11 @@ import { PostsService } from './logistics-message.service';
 import { JwtAuthGuard } from '@/modules/auth/guards/jwt-auth.guard';
 import { RolesGuard } from '@/modules/auth/guards/roles.guard';
 import { Roles } from '@/modules/auth/decorators/roles.decorator';
-import { SendTelegramRawDto, SendTelegramStructuredDto } from '@/types/logistics-message';
+import {
+  ParseMessageDto,
+  SendTelegramRawDto,
+  SendTelegramStructuredDto,
+} from '@/types/logistics-message';
 import { UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiBody, ApiExtraModels, ApiForbiddenResponse, ApiOkResponse, ApiOperation, ApiTags, getSchemaPath } from '@nestjs/swagger';
 import {
@@ -42,6 +46,27 @@ export class PostsController {
   async create(@Body() data: CreateLogisticMessageDto): Promise<any> {
 
     return this.logisticMessageService.create(data);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('DISPATCHER', 'ADMIN')
+  @Post('ai-analyser')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'AI analyser: run the classifier + OpenAI extractor on raw text WITHOUT persisting. Returns a structured payload ready to drop into POST /post/send-to-telegram.',
+  })
+  @ApiBody({ type: ParseMessageDto })
+  @ApiOkResponse({
+    description:
+      'Analysed result with extracted route/metadata fields, classifier verdict, and the raw OpenAI response.',
+  })
+  @ApiForbiddenResponse({ description: 'Access denied' })
+  async aiAnalyser(
+    @Body() body: ParseMessageDto,
+    @Req() req: { user: { userId: number; role: 'ADMIN' | 'DISPATCHER' } }
+  ) {
+    return this.logisticMessageService.parseMessage(body.text, req.user.userId);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
