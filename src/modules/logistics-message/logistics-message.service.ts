@@ -802,15 +802,21 @@ ${text}
       openaiResponse?.metaData?.pickupDate
     );
 
-    // Shape matches SendTelegramStructuredDto so the frontend can post it back
-    // unchanged (after the dispatcher edits whatever they want to override).
+    // Shape matches SendTelegramStructuredDto so the frontend can post `data`
+    // back unchanged. The `country*/region*` fields carry the indexed dictionary
+    // key (e.g. "russia", "tashkent_city") so dispatcher posts persist under the
+    // same vocabulary as scraper-ingested posts and filters stay consistent.
+    // The `*Name` siblings are display-only and are dropped by the send-to-telegram
+    // ValidationPipe whitelist.
     const data = {
-      countryFrom: countryFromName ?? openaiResponse?.route?.fromCountry ?? null,
-      regionFrom:
-        regionFromInfo?.regionName ?? openaiResponse?.route?.fromRegion ?? null,
-      countryTo: countryToName ?? openaiResponse?.route?.toCountry ?? null,
-      regionTo:
-        regionToInfo?.regionName ?? openaiResponse?.route?.toRegion ?? null,
+      countryFrom: openaiResponse?.route?.fromCountry ?? null,
+      countryFromName: countryFromName ?? null,
+      regionFrom: openaiResponse?.route?.fromRegion ?? null,
+      regionFromName: regionFromInfo?.regionName ?? null,
+      countryTo: openaiResponse?.route?.toCountry ?? null,
+      countryToName: countryToName ?? null,
+      regionTo: openaiResponse?.route?.toRegion ?? null,
+      regionToName: regionToInfo?.regionName ?? null,
 
       title: openaiResponse?.metaData?.title ?? null,
       weight: openaiResponse?.metaData?.weight ?? null,
