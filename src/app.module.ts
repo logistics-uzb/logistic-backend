@@ -47,7 +47,7 @@ import { HealthModule } from './modules/health/health.module';
     // TelegramModule,
     LogisticsGatewayModule,
     AuthModule,
-    // HealthModule,
+    HealthModule,
     // TelegramQueueModule,
   ],
   providers: [
