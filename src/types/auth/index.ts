@@ -6,4 +6,6 @@ export * from './dto/verify-code.dto';
 export * from './dto/register-dispatcher.dto';
 export * from './dto/reset-password.dto';
 export * from './dto/dispatcher-login.dto';
+export * from './dto/query-users.dto';
+export * from './dto/create-dispatcher.dto';
 export * from './interfaces/auth.interfaces';

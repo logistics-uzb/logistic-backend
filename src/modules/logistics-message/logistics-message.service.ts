@@ -865,12 +865,31 @@ ${text}
     //   throw new BadRequestException('No active telegram groups found');
     // }
 
+    // Resolve the dispatcher's phone from the JWT instead of trusting the body.
+    const dispatcher = await this.prisma.user.findUnique({
+      where: { id: dispatcherId },
+      select: { id: true, phone: true },
+    });
+    if (!dispatcher) {
+      throw new NotFoundException('Dispatcher not found');
+    }
+    if (!dispatcher.phone) {
+      throw new BadRequestException(
+        'Dispatcher account has no phone on file; cannot attach contact number',
+      );
+    }
+
     const message = body.isMessage
       ? body.message
-      : this.buildTelegramMessage(body as any);
+      : this.buildTelegramMessage(body, dispatcher.phone);
 
     // Persist the dispatcher-submitted post directly — no classifier, no OpenAI.
-    const saved = await this.persistDispatcherPost(body, message, dispatcherId);
+    const saved = await this.persistDispatcherPost(
+      body,
+      message,
+      dispatcherId,
+      dispatcher.phone,
+    );
     this.logger.log(
       `Dispatcher post saved id=${saved.id} createdById=${dispatcherId}`
     );
@@ -911,7 +930,8 @@ ${text}
   private async persistDispatcherPost(
     body: SendTelegramStructuredDto,
     finalText: string,
-    dispatcherId: number
+    dispatcherId: number,
+    phone: string
   ) {
     const toNum = (v: unknown): number | undefined =>
       v != null && v !== '' && !isNaN(Number(v)) ? Number(v) : undefined;
@@ -949,7 +969,7 @@ ${text}
         paymentCurrency: body.paymentCurrency,
 
         pickupDate: body.pickupDate ? new Date(body.pickupDate) : null,
-        phoneNumber: body.phone_number,
+        phoneNumber: phone,
 
         isComplete,
       },
@@ -957,8 +977,11 @@ ${text}
     });
   }
 
-  private buildTelegramMessage(body: SendTelegramStructuredDto): string {
-    const s = body as SendTelegramStructuredDto;
+  private buildTelegramMessage(
+    body: SendTelegramStructuredDto,
+    phone: string
+  ): string {
+    const s = body;
     const lines: string[] = [];
 
     if (s.title) lines.push(`📦 ${s.title}!`);
@@ -983,7 +1006,7 @@ ${text}
     }
     if (s.capacity) lines.push(`📦 Capacity: ${s.capacity}`);
     if (s.pickupDate) lines.push(`📅 Pickup: ${s.pickupDate}`);
-    if (s.phone_number) lines.push(`📞 Phone: ${s.phone_number}`);
+    if (phone) lines.push(`📞 Phone: ${phone}`);
     if (s.description) lines.push(`📝 ${s.description}`);
 
     return lines.join('\n');

@@ -19,7 +19,9 @@ import {
 import {
   AdminLoginDto,
   CreateAdminDto,
+  CreateDispatcherDto,
   DispatcherLoginDto,
+  QueryUsersDto,
   RegisterDispatcherDto,
   ResetPasswordDto,
   SendCodeDto,
@@ -28,6 +30,18 @@ import {
   VerifyCodeDto,
 } from '@/types/auth';
 import { Prisma, VerificationPurpose } from '@prisma/client';
+
+const USER_PUBLIC_SELECT: Prisma.UserSelect = {
+  id: true,
+  fullName: true,
+  username: true,
+  phone: true,
+  role: true,
+  isActive: true,
+  paymentDate: true,
+  createdAt: true,
+  updatedAt: true,
+};
 
 type SessionPayload = { userId: number; role: 'ADMIN' | 'DISPATCHER' };
 type VerificationTokenPayload = {
@@ -101,6 +115,86 @@ export class AuthService {
         isActive: true,
         createdAt: true,
       },
+    });
+  }
+
+  async getMe(userId: number) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: USER_PUBLIC_SELECT,
+    });
+    if (!user) throw new NotFoundException('User not found');
+    return user;
+  }
+
+  async listUsers(query: QueryUsersDto) {
+    const page = query?.page && query.page > 0 ? query.page : 1;
+    const limit =
+      query?.limit && query.limit > 0 && query.limit <= 100 ? query.limit : 20;
+    const skip = (page - 1) * limit;
+
+    const where: Prisma.UserWhereInput = {};
+    if (query?.role) where.role = query.role;
+    if (query?.isActive) where.isActive = query.isActive === 'TRUE';
+    if (query?.search) {
+      const s = query.search.trim();
+      if (s) {
+        where.OR = [
+          { username: { contains: s, mode: 'insensitive' } },
+          { fullName: { contains: s, mode: 'insensitive' } },
+          { phone: { contains: s, mode: 'insensitive' } },
+        ];
+      }
+    }
+
+    const [data, total] = await Promise.all([
+      this.prisma.user.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+        select: USER_PUBLIC_SELECT,
+      }),
+      this.prisma.user.count({ where }),
+    ]);
+
+    return {
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit),
+      count: data.length,
+      data,
+    };
+  }
+
+  /**
+   * Dev / testing path: create a DISPATCHER without the OTP round-trip.
+   * Mirrors registerDispatcher's uniqueness checks (username + phone) but
+   * skips send-code / verify-code so QA can seed accounts directly.
+   */
+  async createDispatcherDev(dto: CreateDispatcherDto) {
+    const phone = this.assertPhone(dto.phone);
+
+    const [phoneTaken, usernameTaken] = await Promise.all([
+      this.prisma.user.findUnique({ where: { phone } }),
+      this.prisma.user.findUnique({ where: { username: dto.username } }),
+    ]);
+    if (phoneTaken) throw new ConflictException('Phone is already registered');
+    if (usernameTaken) throw new ConflictException('Username already taken');
+
+    const passwordHash = await bcrypt.hash(dto.password, 10);
+
+    return this.prisma.user.create({
+      data: {
+        phone,
+        username: dto.username,
+        password: passwordHash,
+        fullName: dto.fullName ?? null,
+        role: 'DISPATCHER',
+        isActive: dto.isActive ?? true,
+      },
+      select: USER_PUBLIC_SELECT,
     });
   }
 

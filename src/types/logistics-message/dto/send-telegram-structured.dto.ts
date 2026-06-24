@@ -94,14 +94,6 @@ export class SendTelegramStructuredDto {
   pickupDate?: string;
 
   @ApiPropertyOptional({
-    example: '+998901234567',
-    description: 'Contact phone number',
-  })
-  @IsOptional()
-  @IsString()
-  phone_number?: string;
-
-  @ApiPropertyOptional({
     example: 'Tezkor yuk',
     description: 'Additional description',
   })

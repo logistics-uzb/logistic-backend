@@ -1,12 +1,15 @@
 import {
   Body,
   Controller,
+  Get,
   HttpCode,
   HttpStatus,
   Param,
   ParseIntPipe,
   Patch,
   Post,
+  Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -17,6 +20,7 @@ import {
   ApiOkResponse,
   ApiOperation,
   ApiParam,
+  ApiQuery,
   ApiTags,
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
@@ -27,7 +31,9 @@ import { Roles } from './decorators/roles.decorator';
 import {
   AdminLoginDto,
   CreateAdminDto,
+  CreateDispatcherDto,
   DispatcherLoginDto,
+  QueryUsersDto,
   RegisterDispatcherDto,
   ResetPasswordDto,
   SendCodeDto,
@@ -74,6 +80,52 @@ export class AuthController {
     @Body() dto: UpdateUserDto,
   ) {
     return this.authService.updateUser(id, dto);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
+  @ApiBearerAuth()
+  @Get('admin/users')
+  @ApiOperation({
+    summary: 'List users with filters (ADMIN) — role / isActive / search, paginated',
+  })
+  @ApiQuery({ name: 'role', required: false, enum: ['ADMIN', 'DISPATCHER'] })
+  @ApiQuery({ name: 'isActive', required: false, enum: ['TRUE', 'FALSE'] })
+  @ApiQuery({
+    name: 'search',
+    required: false,
+    description: 'Contains match against username, phone, or fullName',
+  })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'limit', required: false, type: Number })
+  @ApiForbiddenResponse({ description: 'Access denied' })
+  listUsers(@Query() query: QueryUsersDto) {
+    return this.authService.listUsers(query);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN', 'DISPATCHER')
+  @ApiBearerAuth()
+  @Get('me')
+  @ApiOperation({
+    summary:
+      'Get the currently authenticated user (resolved from the JWT). Works for both ADMIN and DISPATCHER.',
+  })
+  @ApiUnauthorizedResponse({ description: 'Missing or invalid token' })
+  getMe(@Req() req: { user: { userId: number; role: 'ADMIN' | 'DISPATCHER' } }) {
+    return this.authService.getMe(req.user.userId);
+  }
+
+  @Post('admin/create-dispatcher')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({
+    summary:
+      'DEV / TESTING: create a DISPATCHER directly, bypassing the SMS OTP flow. Open during initial setup like /admin/create-admin.',
+  })
+  @ApiBody({ type: CreateDispatcherDto })
+  @ApiConflictResponse({ description: 'Phone or username already taken' })
+  createDispatcherDev(@Body() dto: CreateDispatcherDto) {
+    return this.authService.createDispatcherDev(dto);
   }
 
   // ---------- DISPATCHER  - phone verification ----------
