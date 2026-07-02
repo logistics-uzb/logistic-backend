@@ -77,7 +77,7 @@ export class OpenaiService {
         loads: multi.loads,
       };
     }
-
+    //comment`
     // -----------------------------------------------------------------
     // SINGLE TARMOQ — hozirgi pipeline o'zgarmasdan
     // -----------------------------------------------------------------
@@ -367,7 +367,7 @@ export class OpenaiService {
 
 
 
-  
+
   async extractData(text) {
     try {
       const completion = await this.client.chat.completions.create({
