@@ -29,6 +29,7 @@ import { LogisticsGateway } from '../notification-gateway/notification-gateway.g
 import { classifyByRegex } from '@/common/utils/regex-classifier';
 import { Prisma } from '@prisma/client';
 import { routeData } from '@/common/helpers/route-data';
+import { formatMinutes, getUzbRouteDistance } from '@/common/utils/distance';
 
 // Fields of the dispatcher who created a post that are safe to expose in API
 // responses (password and other sensitive columns are deliberately omitted).
@@ -215,6 +216,14 @@ export class PostsService {
             sentToTelegramAt: new Date(),
           };
 
+          // Masofa (O'zb ichida bo'lsa) — LOAD_POST bo'lganida DB ga yoziladi
+          const multiDist = effectiveIsLoad
+            ? getUzbRouteDistance(
+                load?.route?.fromRegion,
+                load?.route?.toRegion
+              )
+            : null;
+
           const fullRow: Prisma.LogisticMessageCreateInput = effectiveIsLoad
             ? {
                 ...baseRow,
@@ -251,6 +260,10 @@ export class PostsService {
 
                 phoneNumber: phone,
                 isComplete,
+
+                distanceDirectKm: multiDist?.directDistanceKm ?? undefined,
+                distanceKm: multiDist?.distanceKm ?? undefined,
+                distanceTimeMinutes: multiDist?.timeMinutes ?? undefined,
               }
             : baseRow;
 
@@ -345,6 +358,12 @@ export class PostsService {
       let fullData = baseData;
 
       if (effectiveIsLoad) {
+        // Masofa (O'zb ichida bo'lsa) — LOAD_POST bo'lganida DB ga yoziladi
+        const singleDist = getUzbRouteDistance(
+          openaiResponse?.route?.fromRegion,
+          openaiResponse?.route?.toRegion
+        );
+
         fullData = {
           ...baseData,
 
@@ -383,6 +402,10 @@ export class PostsService {
           phoneNumber: openaiResponse.metaData?.phone_number,
 
           isComplete,
+
+          distanceDirectKm: singleDist?.directDistanceKm ?? undefined,
+          distanceKm: singleDist?.distanceKm ?? undefined,
+          distanceTimeMinutes: singleDist?.timeMinutes ?? undefined,
         };
       }
       // -------------------------------------------------------------------
@@ -840,6 +863,22 @@ ${text}
         sentAgo: await this.getTimeAgo(message.sentToTelegramAt),
         sentToTelegramAt: message.sentToTelegramAt,
 
+        // Masofa DB'da saqlangan (LOAD_POST saqlanayotgan paytda hisoblangan).
+        // formattedTime esa runtime hisoblanadi — chunki u shunchaki formatlash.
+        // Uchala qiymat null bo'lsa → distance: null (O'zb ichida bo'lmagan).
+        distance:
+          message.distanceKm != null
+            ? {
+                directDistanceKm: message.distanceDirectKm,
+                distanceKm: message.distanceKm,
+                timeMinutes: message.distanceTimeMinutes,
+                formattedTime:
+                  message.distanceTimeMinutes != null
+                    ? formatMinutes(message.distanceTimeMinutes)
+                    : null,
+              }
+            : null,
+
         source: message.source,
         createdBy: message.createdBy,
 
@@ -1006,6 +1045,12 @@ ${text}
 
       phone_number: openaiResponse?.metaData?.phone_number ?? null,
       description: null,
+
+      // O'zbekiston ichidagi yo'nalish uchun taxminiy masofa/vaqt (null bo'lishi mumkin).
+      distance: getUzbRouteDistance(
+        openaiResponse?.route?.fromRegion,
+        openaiResponse?.route?.toRegion
+      ),
     };
 
     this.logger.log(
@@ -1130,6 +1175,12 @@ ${text}
 
           phone_number: phone ?? null,
           description: null,
+
+          // O'zbekiston ichidagi yo'nalish uchun taxminiy masofa/vaqt.
+          distance: getUzbRouteDistance(
+            load?.route?.fromRegion,
+            load?.route?.toRegion
+          ),
         };
 
         return {
@@ -1157,21 +1208,7 @@ ${text}
   }
 
   async sendToTelegram(body: SendTelegramStructuredDto, dispatcherId: number) {
-    // ---------------------------------------------------------------------
-    // Telegram dispatch temporarily disabled — this endpoint currently only
-    // accepts dispatcher input and persists it to the DB as a LOAD_POST.
-    // Re-enable the active-group fetch + Python MTProto call when needed.
-    // ---------------------------------------------------------------------
-    // const groups = await this.prisma.telegramGroup.findMany({
-    //   where: { isActive: true },
-    //   select: { username: true },
-    // });
-    // const groupUsernames = groups.map((g) => g.username).filter(Boolean);
-    // if (groupUsernames.length === 0) {
-    //   throw new BadRequestException('No active telegram groups found');
-    // }
-
-    // Resolve the dispatcher's phone from the JWT instead of trusting the body.
+    // 1) Dispatcher validatsiya
     const dispatcher = await this.prisma.user.findUnique({
       where: { id: dispatcherId },
       select: { id: true, phone: true },
@@ -1185,11 +1222,35 @@ ${text}
       );
     }
 
+    // 2) Aktiv guruhlarni olish, bloklanganlarni chiqarib tashlash
+    const now = new Date();
+    const [activeGroups, blocked] = await Promise.all([
+      this.prisma.telegramGroup.findMany({
+        where: { isActive: true },
+        select: { username: true },
+      }),
+      this.prisma.blockedGroup.findMany({
+        where: { unblockAt: { gt: now } },
+        select: { username: true },
+      }),
+    ]);
+    const blockedSet = new Set(blocked.map((b) => b.username));
+    const groupUsernames = activeGroups
+      .map((g) => g.username)
+      .filter((u) => u && !blockedSet.has(u));
+
+    if (groupUsernames.length === 0) {
+      throw new BadRequestException(
+        'No active telegram groups available (all blocked or none configured)',
+      );
+    }
+
+    // 3) Xabar matnini quramiz
     const message = body.isMessage
       ? body.message
       : this.buildTelegramMessage(body, dispatcher.phone);
 
-    // Persist the dispatcher-submitted post directly — no classifier, no OpenAI.
+    // 4) Bazaga saqlaymiz (avval PENDING, keyin QUEUED ga o'tkazamiz)
     const saved = await this.persistDispatcherPost(
       body,
       message,
@@ -1197,40 +1258,301 @@ ${text}
       dispatcher.phone,
     );
     this.logger.log(
-      `Dispatcher post saved id=${saved.id} createdById=${dispatcherId}`
+      `Dispatcher post saved id=${saved.id} createdById=${dispatcherId} groups=${groupUsernames.length}`
     );
 
-    // ---------------------------------------------------------------------
-    // const baseUrl = this.configService.get<string>('PYTHON_TELETHON_API_URL');
-    // if (!baseUrl) {
-    //   throw new BadRequestException('Python service URL is not configured');
-    // }
-    //
-    // try {
-    //   const res = await axios.post(
-    //     `${baseUrl.replace(/\/$/, '')}/mtproto/send`,
-    //     {
-    //       message,
-    //       groups: groupUsernames,
-    //     }
-    //   );
-    //   this.logger.log(
-    //     `Sent to Telegram groups: ${groupUsernames.length} (savedId=${saved.id})`
-    //   );
-    //   return {
-    //     success: true,
-    //     sent: groupUsernames.length,
-    //     savedId: saved.id,
-    //     service: res.data,
-    //   };
-    // } catch (error) {
-    //   this.logger.error(`Failed to send to Telegram: ${error.message}`);
-    //   throw new BadRequestException(
-    //     'Failed to send message to Telegram service'
-    //   );
-    // }
+    // 5) Python MTProto servisga navbatga qo'yish (agar sozlangan bo'lsa).
+    // Fallback: env yo'q bo'lsa post PENDING'da qoladi va biz muvaffaqiyat qaytaramiz —
+    // shunda MTProto servisi hali ishga tushmagan bo'lsa ham backend buzilmaydi.
+    // Bu bosqichma-bosqich rollout uchun kerak: avval Node chiqariladi, keyin
+    // env sozlanadi, keyin Python ishga tushiriladi.
+    const mtprotoUrl = this.configService.get<string>('MTPROTO_SERVICE_URL');
+    const sharedSecret = this.configService.get<string>('MTPROTO_SHARED_SECRET');
+    const publicBaseUrl = this.configService.get<string>('PUBLIC_BASE_URL');
 
-    return { success: true, savedId: saved.id };
+    if (!mtprotoUrl || !sharedSecret) {
+      this.logger.warn(
+        `MTPROTO_SERVICE_URL yoki MTPROTO_SHARED_SECRET .env da yo'q — post ${saved.id} DB'ga saqlandi, lekin navbatga qo'yilmadi (sendStatus=PENDING)`
+      );
+      return {
+        success: true,
+        savedId: saved.id,
+        sendStatus: 'PENDING',
+        groupsCount: groupUsernames.length,
+        note: 'MTProto service not configured — persisted only',
+      };
+    }
+
+    const callbackUrl = `${(publicBaseUrl ?? '').replace(/\/$/, '')}/v1/internal/send-result`;
+
+    try {
+      await axios.post(
+        `${mtprotoUrl.replace(/\/$/, '')}/enqueue`,
+        {
+          id: saved.id,
+          message,
+          groups: groupUsernames,
+          callbackUrl,
+        },
+        {
+          headers: { 'X-Internal-Secret': sharedSecret },
+          timeout: 10_000,
+        }
+      );
+
+      await this.prisma.logisticMessage.update({
+        where: { id: saved.id },
+        data: {
+          sendStatus: 'QUEUED',
+          queuedAt: new Date(),
+        },
+      });
+
+      this.logger.log(
+        `Post ${saved.id} navbatga qo'shildi (${groupUsernames.length} ta guruh)`
+      );
+
+      return {
+        success: true,
+        savedId: saved.id,
+        sendStatus: 'QUEUED',
+        groupsCount: groupUsernames.length,
+      };
+    } catch (error) {
+      this.logger.error(
+        `Python /enqueue chaqiruv xatosi (post ${saved.id}): ${error?.message}`
+      );
+      await this.prisma.logisticMessage.update({
+        where: { id: saved.id },
+        data: {
+          sendStatus: 'FAILED',
+          sendResults: {
+            error: 'mtproto_service_unavailable',
+            detail: error?.message ?? 'unknown',
+          },
+        },
+      });
+      throw new BadRequestException(
+        'MTProto service unavailable — post saved but not queued'
+      );
+    }
+  }
+
+  /**
+   * Python MTProto worker'i yuborgan natijalar.
+   * `POST /v1/internal/send-result` orqali chaqiriladi.
+   *
+   * results shakli:
+   *   [{ group: "@name", ok: true, sentAt: "ISO" },
+   *    { group: "@x", ok: false, error: "peer_flood", errorRaw: "..." }]
+   *
+   * Guruh xatolari `BlockedGroup` jadvaliga yoziladi, keyin cron 24h dan
+   * so'ng avtomatik ochib yuboradi (permanent xatolar uchun uzoq muddat).
+   */
+  async applySendResult(payload: {
+    id: number;
+    status: 'SENDING' | 'SENT' | 'PARTIAL' | 'FAILED';
+    results?: Array<{
+      group: string;
+      ok: boolean;
+      sentAt?: string;
+      error?: string;
+      errorRaw?: string;
+      retryAfterSec?: number;
+    }>;
+    finishedAt?: string;
+    startedAt?: string;
+  }) {
+    const { id, status, results = [], finishedAt, startedAt } = payload;
+
+    const existing = await this.prisma.logisticMessage.findUnique({
+      where: { id },
+      select: { id: true, sendStatus: true },
+    });
+    if (!existing) {
+      throw new NotFoundException(`Post ${id} not found`);
+    }
+
+    // Bekor qilingan bo'lsa Python natijasini e'tibormasa
+    if (existing.sendStatus === 'CANCELLED') {
+      this.logger.warn(
+        `Post ${id} bekor qilingan — Python natijasi e'tiborsiz`
+      );
+      return { skipped: true, reason: 'cancelled' };
+    }
+
+    // Guruh xatolarini BlockedGroup jadvaliga yozamiz
+    for (const r of results) {
+      if (r.ok || !r.error) continue;
+      await this.markGroupBlocked(r.group, r.error, r.errorRaw, r.retryAfterSec);
+    }
+
+    const data: Prisma.LogisticMessageUpdateInput = {
+      sendStatus: status,
+      sendResults: results as unknown as Prisma.InputJsonValue,
+    };
+    if (startedAt) data.sendStartedAt = new Date(startedAt);
+    if (finishedAt) data.sendFinishedAt = new Date(finishedAt);
+
+    await this.prisma.logisticMessage.update({ where: { id }, data });
+    this.logger.log(
+      `Post ${id} sendStatus=${status} (${results.length} ta natija)`
+    );
+
+    return { success: true };
+  }
+
+  /**
+   * Guruh xatosini BlockedGroup jadvaliga yozadi (upsert).
+   * error kodi bo'yicha unblockAt muddati:
+   *   peer_flood, flood_wait, slow_mode → 24 soat (yoki retryAfterSec)
+   *   write_forbidden, banned, invalid_username → 365 kun (permanent-like)
+   *   unknown → 6 soat
+   */
+  private async markGroupBlocked(
+    username: string,
+    error: string,
+    errorRaw?: string,
+    retryAfterSec?: number
+  ) {
+    const reasonMap: Record<string, string> = {
+      peer_flood: 'PEER_FLOOD',
+      flood_wait: 'FLOOD_WAIT',
+      slow_mode: 'SLOW_MODE',
+      write_forbidden: 'WRITE_FORBIDDEN',
+      banned: 'BANNED',
+      invalid_username: 'INVALID_USERNAME',
+    };
+    const reason = (reasonMap[error] ?? 'UNKNOWN') as any;
+
+    const DAY = 24 * 60 * 60 * 1000;
+    let durationMs: number;
+    if (retryAfterSec && retryAfterSec > 0) {
+      durationMs = retryAfterSec * 1000;
+    } else if (
+      reason === 'WRITE_FORBIDDEN' ||
+      reason === 'BANNED' ||
+      reason === 'INVALID_USERNAME'
+    ) {
+      durationMs = 365 * DAY;
+    } else if (reason === 'UNKNOWN') {
+      durationMs = 6 * 60 * 60 * 1000;
+    } else {
+      durationMs = DAY;
+    }
+
+    const unblockAt = new Date(Date.now() + durationMs);
+
+    await this.prisma.blockedGroup.upsert({
+      where: { username },
+      create: {
+        username,
+        reason,
+        unblockAt,
+        lastError: errorRaw ?? error,
+      },
+      update: {
+        reason,
+        unblockAt,
+        lastError: errorRaw ?? error,
+        blockedAt: new Date(),
+      },
+    });
+    this.logger.warn(
+      `Guruh bloklandi: ${username} reason=${reason} until=${unblockAt.toISOString()}`
+    );
+  }
+
+  /**
+   * Dispatcher navbatdagi postni bekor qilishi (faqat QUEUED yoki PENDING).
+   * SENDING/SENT/PARTIAL/FAILED holatlarini bekor qilib bo'lmaydi.
+   * Python worker'iga /cancel/{id} chaqirig'i yuboriladi — u navbatdan olib tashlaydi.
+   */
+  async cancelPost(id: number, dispatcherId: number) {
+    const post = await this.prisma.logisticMessage.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        createdById: true,
+        sendStatus: true,
+        source: true,
+      },
+    });
+    if (!post) throw new NotFoundException(`Post ${id} not found`);
+    if (post.source !== 'DISPATCHER') {
+      throw new BadRequestException('Faqat dispatcher postlarini bekor qilish mumkin');
+    }
+    if (post.createdById !== dispatcherId) {
+      throw new BadRequestException('Sizga tegishli emas');
+    }
+    if (post.sendStatus !== 'QUEUED' && post.sendStatus !== 'PENDING') {
+      throw new BadRequestException(
+        `Bu holat bekor qilinmaydi: ${post.sendStatus}`
+      );
+    }
+
+    // Python'ga bekor qilish xabari
+    const mtprotoUrl = this.configService.get<string>('MTPROTO_SERVICE_URL');
+    const sharedSecret = this.configService.get<string>('MTPROTO_SHARED_SECRET');
+    if (mtprotoUrl && sharedSecret) {
+      try {
+        await axios.post(
+          `${mtprotoUrl.replace(/\/$/, '')}/cancel/${id}`,
+          {},
+          {
+            headers: { 'X-Internal-Secret': sharedSecret },
+            timeout: 5_000,
+          }
+        );
+      } catch (err) {
+        this.logger.warn(
+          `Python /cancel/${id} chaqiruv xatosi (davom etamiz): ${err?.message}`
+        );
+      }
+    }
+
+    await this.prisma.logisticMessage.update({
+      where: { id },
+      data: { sendStatus: 'CANCELLED', sendFinishedAt: new Date() },
+    });
+    this.logger.log(`Post ${id} bekor qilindi (dispatcher=${dispatcherId})`);
+    return { success: true, id, sendStatus: 'CANCELLED' };
+  }
+
+  /**
+   * Post yuborish holatini olish.
+   */
+  async getSendStatus(id: number) {
+    const post = await this.prisma.logisticMessage.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        sendStatus: true,
+        queuedAt: true,
+        sendStartedAt: true,
+        sendFinishedAt: true,
+        sendResults: true,
+        source: true,
+      },
+    });
+    if (!post) throw new NotFoundException(`Post ${id} not found`);
+    return post;
+  }
+
+  /**
+   * Har soatda BlockedGroup jadvalidan muddati o'tganlarni tozalab turadi.
+   * Guruh keyingi safar sendToTelegram'da avtomatik qayta ishlatiladi.
+   */
+  @Cron(CronExpression.EVERY_HOUR)
+  async unblockExpiredGroupsCron() {
+    const result = await this.prisma.blockedGroup.deleteMany({
+      where: { unblockAt: { lt: new Date() } },
+    });
+    if (result.count > 0) {
+      this.logger.log(
+        `unblockExpiredGroupsCron: ${result.count} ta guruh muddati tugadi va ochildi`
+      );
+    }
   }
 
   private async persistDispatcherPost(
@@ -1245,6 +1567,12 @@ ${text}
     const isComplete = Boolean(
       body.countryFrom && body.countryTo && body.regionFrom && body.regionTo
     );
+
+    // Masofa (O'zb ichida bo'lsa) — LOAD_POST bo'lganida DB ga yoziladi
+    const isLoad = (body.aiStatus ?? 'LOAD_POST') === 'LOAD_POST';
+    const dist = isLoad
+      ? getUzbRouteDistance(body.regionFrom, body.regionTo)
+      : null;
 
     return this.prisma.logisticMessage.create({
       data: {
@@ -1278,6 +1606,10 @@ ${text}
         phoneNumber: phone,
 
         isComplete,
+
+        distanceDirectKm: dist?.directDistanceKm ?? undefined,
+        distanceKm: dist?.distanceKm ?? undefined,
+        distanceTimeMinutes: dist?.timeMinutes ?? undefined,
       },
       select: { id: true, source: true, createdById: true },
     });

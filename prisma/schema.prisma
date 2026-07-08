@@ -12,6 +12,24 @@ enum PostSource {
   DISPATCHER
 }
 
+// Dispatcher yuborgan xabar Telegramga jo'natish holati.
+// PENDING  → hali navbatga qo'shilmagan (odatda create bo'lganda)
+// QUEUED   → Python worker'ga o'tkazildi, navbatda kutmoqda
+// SENDING  → Python hozir jo'natmoqda
+// SENT     → Barcha guruhlarga muvaffaqiyatli
+// PARTIAL  → Ba'zi guruhlar muvaffaqiyatsiz (bloklangan/xato)
+// FAILED   → Umuman jo'natilmadi (masalan Python xatosi)
+// CANCELLED→ Dispatcher bekor qildi navbatda kutayotganda
+enum SendStatus {
+  PENDING
+  QUEUED
+  SENDING
+  SENT
+  PARTIAL
+  FAILED
+  CANCELLED
+}
+
 model LogisticMessage {
   id                Int       @id @default(autoincrement())
   tgMessageId       Int       // Telegram xabar ID
@@ -49,9 +67,28 @@ model LogisticMessage {
   sentToTelegramAt  DateTime?
   isComplete        Boolean @default(false)
 
+  // O'zbekiston ichidagi yo'nalishlar uchun taxminiy masofa/vaqt (Haversine + 1.30 koef).
+  // Faqat LOAD_POST saqlanayotganda va ikkala region uzbRegions ro'yxatida bo'lsa to'ladi.
+  // Aks holda NULL (masalan Rossiya → O'zbekiston yoki noaniq viloyat).
+  distanceDirectKm     Float?
+  distanceKm           Float?
+  distanceTimeMinutes  Float?
+
   source            PostSource @default(SCRAPING)
   createdById       Int?
   createdBy         User?      @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  // MTProto jo'natish jarayoni holati. Faqat dispatcher yuborgan
+  // xabarlar (source = DISPATCHER) uchun mazmunga ega. SCRAPING
+  // xabarlari uchun PENDING'da qoladi (default).
+  sendStatus        SendStatus @default(PENDING)
+  queuedAt          DateTime?  // Python'ga jo'natilgan vaqt
+  sendStartedAt     DateTime?  // Worker ish boshlagan vaqt
+  sendFinishedAt    DateTime?  // Barcha guruhlar tugagan vaqt
+  // sendResults shakli:
+  //   [{ group: "@somegroup", ok: true, sentAt: "..." },
+  //    { group: "@other", ok: false, error: "peer_flood", errorRaw: "..." }]
+  sendResults       Json?
 
   isActual          Boolean    @default(true) // xabar yangimi yoki yo‘qmi
   createdAt         DateTime   @default(now())
@@ -66,6 +103,7 @@ model LogisticMessage {
   @@index([source])
   @@index([createdById])
   @@index([tgMessageId, channelName])
+  @@index([sendStatus])
 }
 
 model TelegramGroup {
@@ -75,6 +113,32 @@ model TelegramGroup {
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// Guruhga jo'natishda xatolik uchragan holatda 24 soatga blocklanadi.
+// Cron unblockAt < now() bo'lganlarni tozalab turadi.
+// Permanent bloklar (masalan kicked) uchun unblockAt uzoq kelajakka qo'yiladi.
+enum BlockReason {
+  PEER_FLOOD          // PeerFloodError — 24h avtomatik
+  FLOOD_WAIT          // FloodWaitError — err.seconds
+  SLOW_MODE           // SlowModeWaitError — err.seconds
+  WRITE_FORBIDDEN     // ChatWriteForbiddenError — admin qayta kiritishi kerak
+  BANNED              // UserBannedInChannelError — permanent
+  INVALID_USERNAME    // UsernameInvalidError / NotOccupiedError — guruh yo'q
+  UNKNOWN             // boshqa xatoliklar
+}
+
+model BlockedGroup {
+  id         Int         @id @default(autoincrement())
+  username   String      @unique
+  reason     BlockReason
+  blockedAt  DateTime    @default(now())
+  unblockAt  DateTime
+  lastError  String?     // Original xato matni (debug uchun)
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+
+  @@index([unblockAt])
 }
 
 model User {

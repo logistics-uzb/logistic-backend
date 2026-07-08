@@ -20,9 +20,11 @@ import { RolesGuard } from '@/modules/auth/guards/roles.guard';
 import { Roles } from '@/modules/auth/decorators/roles.decorator';
 import {
   ParseMessageDto,
+  SendResultDto,
   SendTelegramRawDto,
   SendTelegramStructuredDto,
 } from '@/types/logistics-message';
+import { InternalSecretGuard } from '@/common/guards/internal-secret.guard';
 import { UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiBody, ApiExtraModels, ApiForbiddenResponse, ApiOkResponse, ApiOperation, ApiTags, getSchemaPath } from '@nestjs/swagger';
 import {
@@ -81,13 +83,40 @@ export class PostsController {
       ],
     },
   })
-  @ApiOkResponse({ description: 'Message sent to active telegram groups' })
+  @ApiOkResponse({ description: 'Message queued for Telegram delivery' })
   @ApiForbiddenResponse({ description: 'Access denied' })
   async sendToTelegram(
     @Body() body: SendTelegramStructuredDto,
     @Req() req: { user: { userId: number; role: 'ADMIN' | 'DISPATCHER' } }
   ) {
     return this.logisticMessageService.sendToTelegram(body, req.user.userId);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('DISPATCHER', 'ADMIN')
+  @Post(':id/cancel')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Cancel a queued dispatcher post. Only allowed while sendStatus = PENDING or QUEUED.',
+  })
+  async cancelPost(
+    @Param('id') id: string,
+    @Req() req: { user: { userId: number; role: 'ADMIN' | 'DISPATCHER' } }
+  ) {
+    return this.logisticMessageService.cancelPost(Number(id), req.user.userId);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('DISPATCHER', 'ADMIN')
+  @Get(':id/status')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Fetch current MTProto send status for a post (queue position, per-group results).',
+  })
+  async getSendStatus(@Param('id') id: string) {
+    return this.logisticMessageService.getSendStatus(Number(id));
   }
 
   @Get('all')
