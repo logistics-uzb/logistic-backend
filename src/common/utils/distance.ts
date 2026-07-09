@@ -1,4 +1,4 @@
-import { getUzbRegionByIndexedName } from '@/common/helpers/uzb-regions';
+import { getRegionByIndexedName } from '@/common/helpers/region-coords';
 
 /** Yo'lda mashina to'g'ri chiziq bo'yicha yurmaydi — realroq masofa uchun 1.30 koeffitsient. */
 const ROAD_FACTOR = 1.3;
@@ -68,15 +68,46 @@ export function getDistanceKm(
 }
 
 /**
- * Ikkala regionni ham `uzbRegions` dan qidiradi va masofani qaytaradi.
- * Agar bittasi topilmasa (masalan Rossiya viloyati yoki noaniq nom) → null.
+ * Ikkala regionni ham `region-coords` dan qidiradi va masofani qaytaradi.
+ * Qo'llab-quvvatlanadigan mamlakatlar: O'zb, Qozog'iston, Qirg'iziston,
+ * Tojikiston, Belarus, Turkiya. Bo'lmagan yo'nalishlar uchun → null.
  */
-export function getUzbRouteDistance(
+export function getRouteDistance(
   fromIndexedName: string | null | undefined,
   toIndexedName: string | null | undefined
 ): DistanceResult | null {
-  const from = getUzbRegionByIndexedName(fromIndexedName);
-  const to = getUzbRegionByIndexedName(toIndexedName);
+  const from = getRegionByIndexedName(fromIndexedName);
+  const to = getRegionByIndexedName(toIndexedName);
   if (!from || !to) return null;
   return getDistanceKm(from.coor.lat, from.coor.lng, to.coor.lat, to.coor.lng);
+}
+
+export interface PricePerKm {
+  /** paymentAmount / distanceKm — bir km uchun narx. */
+  value: number;
+  /** Valyuta (kirish paymentCurrency ni takrorlaydi). */
+  currency: string;
+}
+
+/**
+ * Bir km uchun narxni hisoblaydi. `paymentAmount`, `distanceKm` va `paymentCurrency`
+ * uchtasi ham mavjud (va distanceKm > 0) bo'lgandagina hisoblab beriladi.
+ * Aks holda → null.
+ */
+export function getPricePerKm(
+  paymentAmount: number | null | undefined,
+  distanceKm: number | null | undefined,
+  paymentCurrency: string | null | undefined
+): PricePerKm | null {
+  if (paymentAmount == null || distanceKm == null || !paymentCurrency) {
+    return null;
+  }
+  if (!Number.isFinite(paymentAmount) || !Number.isFinite(distanceKm)) {
+    return null;
+  }
+  if (distanceKm <= 0) return null;
+  return {
+    value: paymentAmount / distanceKm,
+    currency: paymentCurrency,
+  };
 }

@@ -67,12 +67,16 @@ model LogisticMessage {
   sentToTelegramAt  DateTime?
   isComplete        Boolean @default(false)
 
-  // O'zbekiston ichidagi yo'nalishlar uchun taxminiy masofa/vaqt (Haversine + 1.30 koef).
-  // Faqat LOAD_POST saqlanayotganda va ikkala region uzbRegions ro'yxatida bo'lsa to'ladi.
-  // Aks holda NULL (masalan Rossiya → O'zbekiston yoki noaniq viloyat).
+  // Ma'lum viloyatlar orasidagi yo'nalishlar uchun taxminiy masofa/vaqt (Haversine + 1.30 koef).
+  // O'zb, Qozog'iston, Qirg'iziston, Tojikiston, Belarus, Turkiya viloyatlari qo'llab-quvvatlanadi.
+  // Faqat LOAD_POST saqlanayotganda va ikkala region region-coords ro'yxatida bo'lsa to'ladi.
   distanceDirectKm     Float?
   distanceKm           Float?
   distanceTimeMinutes  Float?
+  // Bir km uchun narx (paymentAmount / distanceKm). Uch shart bajarilgandagina:
+  //   paymentAmount != null && distanceKm != null && paymentCurrency != null.
+  // Valyuta `paymentCurrency` ustunidan olinadi.
+  pricePerKm           Float?
 
   source            PostSource @default(SCRAPING)
   createdById       Int?

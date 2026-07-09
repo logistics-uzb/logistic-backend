@@ -29,7 +29,11 @@ import { LogisticsGateway } from '../notification-gateway/notification-gateway.g
 import { classifyByRegex } from '@/common/utils/regex-classifier';
 import { Prisma } from '@prisma/client';
 import { routeData } from '@/common/helpers/route-data';
-import { formatMinutes, getUzbRouteDistance } from '@/common/utils/distance';
+import {
+  formatMinutes,
+  getPricePerKm,
+  getRouteDistance,
+} from '@/common/utils/distance';
 
 // Fields of the dispatcher who created a post that are safe to expose in API
 // responses (password and other sensitive columns are deliberately omitted).
@@ -216,11 +220,23 @@ export class PostsService {
             sentToTelegramAt: new Date(),
           };
 
-          // Masofa (O'zb ichida bo'lsa) — LOAD_POST bo'lganida DB ga yoziladi
+          // Masofa (ma'lum viloyat bo'lsa) — LOAD_POST bo'lganida DB ga yoziladi
           const multiDist = effectiveIsLoad
-            ? getUzbRouteDistance(
+            ? getRouteDistance(
                 load?.route?.fromRegion,
                 load?.route?.toRegion
+              )
+            : null;
+          const multiPaymentAmount =
+            load?.metaData?.paymentAmount != null &&
+            !isNaN(Number(load.metaData.paymentAmount))
+              ? Number(load.metaData.paymentAmount)
+              : null;
+          const multiPricePerKm = effectiveIsLoad
+            ? getPricePerKm(
+                multiPaymentAmount,
+                multiDist?.distanceKm,
+                load?.metaData?.paymentCurrency
               )
             : null;
 
@@ -264,6 +280,7 @@ export class PostsService {
                 distanceDirectKm: multiDist?.directDistanceKm ?? undefined,
                 distanceKm: multiDist?.distanceKm ?? undefined,
                 distanceTimeMinutes: multiDist?.timeMinutes ?? undefined,
+                pricePerKm: multiPricePerKm?.value ?? undefined,
               }
             : baseRow;
 
@@ -358,10 +375,20 @@ export class PostsService {
       let fullData = baseData;
 
       if (effectiveIsLoad) {
-        // Masofa (O'zb ichida bo'lsa) — LOAD_POST bo'lganida DB ga yoziladi
-        const singleDist = getUzbRouteDistance(
+        // Masofa (ma'lum viloyat bo'lsa) — LOAD_POST bo'lganida DB ga yoziladi
+        const singleDist = getRouteDistance(
           openaiResponse?.route?.fromRegion,
           openaiResponse?.route?.toRegion
+        );
+        const singlePaymentAmount =
+          openaiResponse?.metaData?.paymentAmount != null &&
+          !isNaN(Number(openaiResponse.metaData.paymentAmount))
+            ? Number(openaiResponse.metaData.paymentAmount)
+            : null;
+        const singlePricePerKm = getPricePerKm(
+          singlePaymentAmount,
+          singleDist?.distanceKm,
+          openaiResponse?.metaData?.paymentCurrency
         );
 
         fullData = {
@@ -406,6 +433,7 @@ export class PostsService {
           distanceDirectKm: singleDist?.directDistanceKm ?? undefined,
           distanceKm: singleDist?.distanceKm ?? undefined,
           distanceTimeMinutes: singleDist?.timeMinutes ?? undefined,
+          pricePerKm: singlePricePerKm?.value ?? undefined,
         };
       }
       // -------------------------------------------------------------------
@@ -879,6 +907,16 @@ ${text}
               }
             : null,
 
+        // Per km narx — DB'da saqlangan (LOAD_POST saqlanayotgan paytda hisoblangan).
+        // Value va currency mavjud bo'lsagina obyekt sifatida qaytariladi.
+        pricePerKm:
+          message.pricePerKm != null && message.paymentCurrency
+            ? {
+                value: message.pricePerKm,
+                currency: message.paymentCurrency,
+              }
+            : null,
+
         source: message.source,
         createdBy: message.createdBy,
 
@@ -1045,13 +1083,21 @@ ${text}
 
       phone_number: openaiResponse?.metaData?.phone_number ?? null,
       description: null,
+    } as any;
 
-      // O'zbekiston ichidagi yo'nalish uchun taxminiy masofa/vaqt (null bo'lishi mumkin).
-      distance: getUzbRouteDistance(
-        openaiResponse?.route?.fromRegion,
-        openaiResponse?.route?.toRegion
-      ),
-    };
+    // Ma'lum viloyat ichidagi yo'nalish uchun taxminiy masofa/vaqt.
+    const singleDistance = getRouteDistance(
+      openaiResponse?.route?.fromRegion,
+      openaiResponse?.route?.toRegion
+    );
+    data.distance = singleDistance;
+
+    // Per km narx (paymentAmount, distanceKm va paymentCurrency uchtasi bor bo'lsa).
+    data.pricePerKm = getPricePerKm(
+      openaiResponse?.metaData?.paymentAmount,
+      singleDistance?.distanceKm,
+      openaiResponse?.metaData?.paymentCurrency
+    );
 
     this.logger.log(
       `${tag} DONE effectiveLoad=${effectiveIsLoad} isComplete=${isComplete} hasPhone=${hasPhone} in ${elapsed()}`
@@ -1175,13 +1221,21 @@ ${text}
 
           phone_number: phone ?? null,
           description: null,
+        } as any;
 
-          // O'zbekiston ichidagi yo'nalish uchun taxminiy masofa/vaqt.
-          distance: getUzbRouteDistance(
-            load?.route?.fromRegion,
-            load?.route?.toRegion
-          ),
-        };
+        // Ma'lum viloyat ichidagi yo'nalish uchun taxminiy masofa/vaqt.
+        const blockDistance = getRouteDistance(
+          load?.route?.fromRegion,
+          load?.route?.toRegion
+        );
+        data.distance = blockDistance;
+
+        // Per km narx (paymentAmount, distanceKm va paymentCurrency uchtasi bor bo'lsa).
+        data.pricePerKm = getPricePerKm(
+          load?.metaData?.paymentAmount,
+          blockDistance?.distanceKm,
+          load?.metaData?.paymentCurrency
+        );
 
         return {
           blockIndex: i,
@@ -1568,10 +1622,17 @@ ${text}
       body.countryFrom && body.countryTo && body.regionFrom && body.regionTo
     );
 
-    // Masofa (O'zb ichida bo'lsa) — LOAD_POST bo'lganida DB ga yoziladi
+    // Masofa (ma'lum viloyat bo'lsa) — LOAD_POST bo'lganida DB ga yoziladi
     const isLoad = (body.aiStatus ?? 'LOAD_POST') === 'LOAD_POST';
     const dist = isLoad
-      ? getUzbRouteDistance(body.regionFrom, body.regionTo)
+      ? getRouteDistance(body.regionFrom, body.regionTo)
+      : null;
+    const dispatcherPricePerKm = isLoad
+      ? getPricePerKm(
+          toNum(body.paymentAmount),
+          dist?.distanceKm,
+          body.paymentCurrency
+        )
       : null;
 
     return this.prisma.logisticMessage.create({
@@ -1610,6 +1671,7 @@ ${text}
         distanceDirectKm: dist?.directDistanceKm ?? undefined,
         distanceKm: dist?.distanceKm ?? undefined,
         distanceTimeMinutes: dist?.timeMinutes ?? undefined,
+        pricePerKm: dispatcherPricePerKm?.value ?? undefined,
       },
       select: { id: true, source: true, createdById: true },
     });
