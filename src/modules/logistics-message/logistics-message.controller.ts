@@ -19,6 +19,7 @@ import { JwtAuthGuard } from '@/modules/auth/guards/jwt-auth.guard';
 import { RolesGuard } from '@/modules/auth/guards/roles.guard';
 import { Roles } from '@/modules/auth/decorators/roles.decorator';
 import {
+  IncrementCountsDto,
   ParseMessageDto,
   SendResultDto,
   SendTelegramRawDto,
@@ -90,6 +91,21 @@ export class PostsController {
     @Req() req: { user: { userId: number; role: 'ADMIN' | 'DISPATCHER' } }
   ) {
     return this.logisticMessageService.sendToTelegram(body, req.user.userId);
+  }
+
+  @Post('view-increment')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Bir necha post uchun view yoki call statistikasini +1 oshirish. Ochiq (public) — auth kerak emas, chunki oddiy foydalanuvchilar ham korilayotgan/qo\'ng\'iroq qilingan yuklarni ko\'rishlari kerak.',
+  })
+  @ApiBody({ type: IncrementCountsDto })
+  @ApiOkResponse({
+    description:
+      'Yangilangan yozuvlar soni qaytariladi. Mavjud bo\'lmagan ID lar jimgina o\'tkazib yuboriladi.',
+  })
+  async incrementCounts(@Body() dto: IncrementCountsDto) {
+    return this.logisticMessageService.incrementCounts(dto);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)

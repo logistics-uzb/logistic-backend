@@ -21,6 +21,7 @@ import axios from 'axios';
 import { PrismaService } from '../prisma/prisma.service';
 import { ConfigService } from '@nestjs/config';
 import {
+  IncrementCountsDto,
   SendTelegramRawDto,
   SendTelegramStructuredDto,
 } from '@/types/logistics-message';
@@ -917,6 +918,10 @@ ${text}
               }
             : null,
 
+        // Frontend yig'gan statistika (view-increment endpoint orqali).
+        viewCount: message.viewCount,
+        callCount: message.callCount,
+
         source: message.source,
         createdBy: message.createdBy,
 
@@ -1591,6 +1596,39 @@ ${text}
     });
     if (!post) throw new NotFoundException(`Post ${id} not found`);
     return post;
+  }
+
+  /**
+   * Frontend yuboradigan view/call increment. Bir chaqiruvda bir necha post
+   * uchun bir xil turdagi statistika oshirilishi mumkin.
+   *
+   * Non-existent ID lar sukut bilan tashlab yuboriladi (updateMany faqat
+   * mavjudlarni yangilaydi). Noyob string ID lar Number ga o'girilib,
+   * finite/musbat bo'lganlari qabul qilinadi.
+   */
+  async incrementCounts(dto: IncrementCountsDto) {
+    const ids = dto.loadIds
+      .map((v) => Number(v))
+      .filter((n) => Number.isFinite(n) && n > 0);
+
+    if (ids.length === 0) {
+      return { updated: 0, requested: dto.loadIds.length };
+    }
+
+    const field = dto.type === 'view' ? 'viewCount' : 'callCount';
+    const result = await this.prisma.logisticMessage.updateMany({
+      where: { id: { in: ids } },
+      data: { [field]: { increment: 1 } },
+    });
+
+    this.logger.log(
+      `incrementCounts type=${dto.type} requested=${dto.loadIds.length} valid=${ids.length} updated=${result.count}`
+    );
+    return {
+      updated: result.count,
+      requested: dto.loadIds.length,
+      type: dto.type,
+    };
   }
 
   /**

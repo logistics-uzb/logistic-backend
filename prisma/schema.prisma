@@ -78,6 +78,14 @@ model LogisticMessage {
   // Valyuta `paymentCurrency` ustunidan olinadi.
   pricePerKm           Float?
 
+  // Front tomonidan yig'iladigan statistika:
+  //   viewCount — post batafsil ochilgan (yoki karta ko'rilgan) marta
+  //   callCount — telefon raqami bosilgan (aloqa urunilgan) marta
+  // Har biri POST /v1/post/view-increment orqali +1 bo'lib boradi.
+  // NB: `views` maydoni bu emas — u Telegram post ko'rishlari (scraper qaytaradi).
+  viewCount            Int      @default(0)
+  callCount            Int      @default(0)
+
   source            PostSource @default(SCRAPING)
   createdById       Int?
   createdBy         User?      @relation(fields: [createdById], references: [id], onDelete: SetNull)
