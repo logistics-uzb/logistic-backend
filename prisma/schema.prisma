@@ -123,6 +123,10 @@ model TelegramGroup {
   username  String   @unique
   title     String?
   isActive  Boolean  @default(true)
+  // Guruh Telegram slow-mode sekundlari (ma'lum bo'lsa) — kelajakda Python
+  // worker global INTER_GROUP_DELAY o'rniga shu qiymatga qarab kutishi mumkin.
+  // Hozircha faqat ma'lumot uchun saqlanadi.
+  slowModeSec Int?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }

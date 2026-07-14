@@ -55,3 +55,6 @@ pids
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 /data
+
+# Prisma dev-only scripts (local queries, ad-hoc SQL) — not for commit
+/prisma/dev-scripts/
