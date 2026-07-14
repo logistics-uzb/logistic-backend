@@ -9,7 +9,7 @@ import {
   authCodeConfig,
 } from './common/config/app.config';
 import { MongooseModule } from '@nestjs/mongoose';
-import { APP_FILTER } from '@nestjs/core';
+import { APP_FILTER, APP_INTERCEPTOR } from '@nestjs/core';
 import { PostsModule } from './modules/logistics-message/logistics-message.module';
 import { CronJobModule } from './common/cron/cron.module';
 import { PrismaModule } from './modules/prisma/prisma.module';
@@ -21,6 +21,8 @@ import { LogisticsGatewayModule } from './modules/notification-gateway/notificat
 import { TelegramGroupModule } from './modules/telegram-group/telegram-group.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { HealthModule } from './modules/health/health.module';
+import { StatsModule } from './modules/stats/stats.module';
+import { RequestLoggerInterceptor } from './common/interceptors/request-logger.interceptor';
 // import { TelegramQueueModule } from './modules/telegram-queue/telegram-queue.module';
 
 @Module({
@@ -48,12 +50,17 @@ import { HealthModule } from './modules/health/health.module';
     LogisticsGatewayModule,
     AuthModule,
     HealthModule,
+    StatsModule,
     // TelegramQueueModule,
   ],
   providers: [
     {
       provide: APP_FILTER,
       useClass: AllExceptionFilter,
+    },
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: RequestLoggerInterceptor,
     },
   ],
 })

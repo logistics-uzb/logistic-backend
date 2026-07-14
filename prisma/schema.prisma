@@ -195,3 +195,21 @@ model VerificationCode {
 
   @@index([phone, purpose])
 }
+
+// Statistika uchun kuzatilayotgan endpoint chaqiruvlari.
+// RequestLoggerInterceptor har chaqiruv oxirida (fire-and-forget) yozadi.
+// Cron 30 kundan eski yozuvlarni tozalab boradi (deleteOldRequestLogsCron).
+// Faqat oldindan belgilangan pathlar kuzatiladi — barcha requestlarni yozmaymiz.
+model RequestLog {
+  id         Int      @id @default(autoincrement())
+  path       String   // masalan "/v1/post/all"
+  method     String   // GET, POST, PUT, DELETE
+  statusCode Int      // 200, 400, 500 va h.k.
+  durationMs Int      // handler ishlagan vaqt
+  userId     Int?     // agar JWT bilan kirsa
+  ip         String?  // x-forwarded-for yoki request.ip
+  createdAt  DateTime @default(now())
+
+  @@index([path, createdAt])
+  @@index([createdAt])
+}
