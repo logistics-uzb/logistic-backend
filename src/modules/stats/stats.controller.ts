@@ -1,26 +1,18 @@
-import { Controller, Get, HttpCode, HttpStatus, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, HttpCode, HttpStatus, Query } from '@nestjs/common';
 import {
-  ApiBearerAuth,
   ApiOkResponse,
   ApiOperation,
   ApiTags,
 } from '@nestjs/swagger';
-
-import { JwtAuthGuard } from '@/modules/auth/guards/jwt-auth.guard';
-import { RolesGuard } from '@/modules/auth/guards/roles.guard';
-import { Roles } from '@/modules/auth/decorators/roles.decorator';
 
 import { GetStatsDto } from './dto/get-stats.dto';
 import { StatsService } from './stats.service';
 
 /**
  * Endpoint statistika API — RequestLog jadvali ustidan agregatsiya.
- * Faqat ADMIN kira oladi (dispatcherlarga ehtiyoj yo'q).
+ * Ochiq (public) — barcha foydalanuvchilar ko'rishlari mumkin.
  */
-@ApiBearerAuth()
 @ApiTags('Stats')
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles('ADMIN')
 @Controller('stats')
 export class StatsController {
   constructor(private readonly statsService: StatsService) {}

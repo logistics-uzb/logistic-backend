@@ -84,13 +84,36 @@ export class StatsService {
 
   /**
    * Timeseries — vaqt bo'yicha bucketlangan sonlar.
+   * Bo'sh bucketlar (chaqiruv bo'lmagan soat/kun/oy) `count: 0` bilan
+   * to'ldirilib qaytariladi — grafik uzluksiz ko'rinishi uchun.
+   *
+   * Default range (from/to berilmasa):
+   *   hour  → oxirgi 24 soat
+   *   day   → oxirgi 30 kun
+   *   month → oxirgi 12 oy
+   *
    * PostgreSQL `date_trunc` orqali agregatsiya (Prisma groupBy custom bucketni
    * qo'llab-quvvatlamaydi, shuning uchun $queryRaw ishlatamiz).
    */
   async getTimeseries(dto: GetStatsDto) {
     const bucket = dto.bucket ?? 'day';
+    const now = Date.now();
 
-    // SQL injection'dan himoya: bucket faqat oldindan tanlangan qiymatlardan bo'ladi.
+    // Default oralig'ini o'rnatamiz agar berilmasa
+    let fromMs = dto.from;
+    let toMs = dto.to ?? now;
+    if (fromMs == null) {
+      const HOUR = 60 * 60 * 1000;
+      const DAY = 24 * HOUR;
+      if (bucket === 'hour') fromMs = now - 24 * HOUR;
+      else if (bucket === 'day') fromMs = now - 30 * DAY;
+      else fromMs = now - 365 * DAY; // month
+    }
+
+    const fromDate = this.floorTo(new Date(fromMs), bucket);
+    const toDate = this.floorTo(new Date(toMs), bucket);
+
+    // SQL injection'dan himoya: bucket faqat oldindan tanlangan qiymatlardan.
     const truncUnit: Record<'hour' | 'day' | 'month', string> = {
       hour: 'hour',
       day: 'day',
@@ -98,23 +121,17 @@ export class StatsService {
     };
     const unit = truncUnit[bucket];
 
-    const conditions: Prisma.Sql[] = [];
+    const conditions: Prisma.Sql[] = [
+      Prisma.sql`"createdAt" >= ${fromDate}`,
+      Prisma.sql`"createdAt" < ${this.addOne(toDate, bucket)}`,
+    ];
     if (dto.path) {
       conditions.push(Prisma.sql`"path" LIKE ${dto.path + '%'}`);
     }
     if (dto.method) {
       conditions.push(Prisma.sql`"method" = ${dto.method}`);
     }
-    if (dto.from) {
-      conditions.push(Prisma.sql`"createdAt" >= ${new Date(dto.from)}`);
-    }
-    if (dto.to) {
-      conditions.push(Prisma.sql`"createdAt" <= ${new Date(dto.to)}`);
-    }
-    const whereSql =
-      conditions.length > 0
-        ? Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}`
-        : Prisma.empty;
+    const whereSql = Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}`;
 
     const rows: Array<{ bucket: Date; count: bigint }> =
       await this.prisma.$queryRaw(
@@ -127,13 +144,50 @@ export class StatsService {
         `
       );
 
+    // Xaritaga solamiz — tez qidiruv uchun
+    const countMap = new Map<number, number>();
+    for (const r of rows) {
+      countMap.set(r.bucket.getTime(), Number(r.count));
+    }
+
+    // Barcha bucketlarni generatsiya qilib bo'sh bo'lganlarga 0 qo'yamiz
+    const points: Array<{ at: string; count: number }> = [];
+    let total = 0;
+    for (let d = fromDate; d <= toDate; d = this.addOne(d, bucket)) {
+      const count = countMap.get(d.getTime()) ?? 0;
+      points.push({ at: d.toISOString(), count });
+      total += count;
+    }
+
     return {
       bucket,
-      points: rows.map((r) => ({
-        at: r.bucket.toISOString(),
-        count: Number(r.count),
-      })),
+      from: fromDate.toISOString(),
+      to: toDate.toISOString(),
+      total,
+      points,
     };
+  }
+
+  /** Vaqtni bucket boshiga yaxlitlash (soat/kun/oy). UTC ichida. */
+  private floorTo(d: Date, bucket: 'hour' | 'day' | 'month'): Date {
+    const r = new Date(d.getTime());
+    r.setUTCMilliseconds(0);
+    r.setUTCSeconds(0);
+    r.setUTCMinutes(0);
+    if (bucket === 'hour') return r;
+    r.setUTCHours(0);
+    if (bucket === 'day') return r;
+    r.setUTCDate(1);
+    return r;
+  }
+
+  /** Bucket kattaligiga qarab +1 (soat/kun/oy). */
+  private addOne(d: Date, bucket: 'hour' | 'day' | 'month'): Date {
+    const r = new Date(d.getTime());
+    if (bucket === 'hour') r.setUTCHours(r.getUTCHours() + 1);
+    else if (bucket === 'day') r.setUTCDate(r.getUTCDate() + 1);
+    else r.setUTCMonth(r.getUTCMonth() + 1);
+    return r;
   }
 
   private buildWhere(dto: GetStatsDto): Prisma.RequestLogWhereInput {
