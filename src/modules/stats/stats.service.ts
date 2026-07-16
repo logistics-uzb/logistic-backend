@@ -7,6 +7,13 @@ import { PrismaService } from '@/modules/prisma/prisma.service';
 import { GetStatsDto } from './dto/get-stats.dto';
 
 /**
+ * Toshkent (Asia/Tashkent) UTC+5, DST yo'q. Barcha bucketlar shu vaqt bo'yicha
+ * yaxlitlanadi — foydalanuvchi "00-01" Toshkent soati sifatida ko'radi.
+ */
+const TZ_OFFSET_HOURS = 5;
+const TZ_OFFSET_MS = TZ_OFFSET_HOURS * 60 * 60 * 1000;
+
+/**
  * RequestLog jadvali ustidan agregatsiya. Barcha filterlar ixtiyoriy —
  * berilmasa umumiy statistika qaytadi.
  */
@@ -133,6 +140,8 @@ export class StatsService {
     }
     const whereSql = Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}`;
 
+    // DB sessiya timezone'i Asia/Tashkent (`ALTER DATABASE ... SET TIMEZONE`)
+    // bo'lgani uchun `date_trunc` avtomatik Toshkent bucket boshini qaytaradi.
     const rows: Array<{ bucket: Date; count: bigint }> =
       await this.prisma.$queryRaw(
         Prisma.sql`
@@ -150,44 +159,63 @@ export class StatsService {
       countMap.set(r.bucket.getTime(), Number(r.count));
     }
 
-    // Barcha bucketlarni generatsiya qilib bo'sh bo'lganlarga 0 qo'yamiz
+    // Barcha bucketlarni generatsiya qilib bo'sh bo'lganlarga 0 qo'yamiz.
+    // `at` — Toshkent local vaqti (+05:00 suffix bilan).
     const points: Array<{ at: string; count: number }> = [];
     let total = 0;
     for (let d = fromDate; d <= toDate; d = this.addOne(d, bucket)) {
       const count = countMap.get(d.getTime()) ?? 0;
-      points.push({ at: d.toISOString(), count });
+      points.push({ at: this.formatLocalIso(d), count });
       total += count;
     }
 
     return {
       bucket,
-      from: fromDate.toISOString(),
-      to: toDate.toISOString(),
+      timezone: 'Asia/Tashkent',
+      from: this.formatLocalIso(fromDate),
+      to: this.formatLocalIso(toDate),
       total,
       points,
     };
   }
 
-  /** Vaqtni bucket boshiga yaxlitlash (soat/kun/oy). UTC ichida. */
+  /**
+   * Vaqtni bucket boshiga yaxlitlash — Toshkent local vaqtida.
+   * Berilgan UTC Date'ni +5h siljitib, UTC yaxlitlab, -5h qaytaramiz.
+   */
   private floorTo(d: Date, bucket: 'hour' | 'day' | 'month'): Date {
-    const r = new Date(d.getTime());
-    r.setUTCMilliseconds(0);
-    r.setUTCSeconds(0);
-    r.setUTCMinutes(0);
-    if (bucket === 'hour') return r;
-    r.setUTCHours(0);
-    if (bucket === 'day') return r;
-    r.setUTCDate(1);
-    return r;
+    const local = new Date(d.getTime() + TZ_OFFSET_MS);
+    local.setUTCMilliseconds(0);
+    local.setUTCSeconds(0);
+    local.setUTCMinutes(0);
+    if (bucket !== 'hour') local.setUTCHours(0);
+    if (bucket === 'month') local.setUTCDate(1);
+    return new Date(local.getTime() - TZ_OFFSET_MS);
   }
 
-  /** Bucket kattaligiga qarab +1 (soat/kun/oy). */
+  /**
+   * Bucket kattaligiga qarab +1 (soat/kun/oy) — Toshkent local vaqtida.
+   */
   private addOne(d: Date, bucket: 'hour' | 'day' | 'month'): Date {
-    const r = new Date(d.getTime());
-    if (bucket === 'hour') r.setUTCHours(r.getUTCHours() + 1);
-    else if (bucket === 'day') r.setUTCDate(r.getUTCDate() + 1);
-    else r.setUTCMonth(r.getUTCMonth() + 1);
-    return r;
+    const local = new Date(d.getTime() + TZ_OFFSET_MS);
+    if (bucket === 'hour') local.setUTCHours(local.getUTCHours() + 1);
+    else if (bucket === 'day') local.setUTCDate(local.getUTCDate() + 1);
+    else local.setUTCMonth(local.getUTCMonth() + 1);
+    return new Date(local.getTime() - TZ_OFFSET_MS);
+  }
+
+  /**
+   * UTC Date'ni Toshkent local ISO ko'rinishida formatlaydi:
+   *   "2026-07-16T15:00:00+05:00"
+   */
+  private formatLocalIso(d: Date): string {
+    const local = new Date(d.getTime() + TZ_OFFSET_MS);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return (
+      `${local.getUTCFullYear()}-${pad(local.getUTCMonth() + 1)}-${pad(local.getUTCDate())}` +
+      `T${pad(local.getUTCHours())}:${pad(local.getUTCMinutes())}:${pad(local.getUTCSeconds())}` +
+      `+0${TZ_OFFSET_HOURS}:00`
+    );
   }
 
   private buildWhere(dto: GetStatsDto): Prisma.RequestLogWhereInput {
