@@ -196,6 +196,20 @@ model VerificationCode {
   @@index([phone, purpose])
 }
 
+// Foydalanuvchi post ustidagi "Telegram" yoki "Qo'ng'iroq qilish" tugmasini
+// bosganida yoziladi. Hour/day/month bo'yicha stats uchun ishlatiladi.
+// LogisticMessage.callCount/viewCount jami sonni saqlaydi (kumulyativ),
+// bu jadval esa har bir bosishni vaqti bilan yozadi — soatlik grafik uchun.
+model ButtonClick {
+  id        Int      @id @default(autoincrement())
+  type      String   // "tg" | "call"
+  loadId    Int?     // qaysi post uchun bosilgan (ixtiyoriy)
+  createdAt DateTime @default(now())
+
+  @@index([type, createdAt])
+  @@index([createdAt])
+}
+
 // Statistika uchun kuzatilayotgan endpoint chaqiruvlari.
 // RequestLoggerInterceptor har chaqiruv oxirida (fire-and-forget) yozadi.
 // Cron 30 kundan eski yozuvlarni tozalab boradi (deleteOldRequestLogsCron).

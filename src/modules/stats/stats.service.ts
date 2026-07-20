@@ -232,6 +232,103 @@ export class StatsService {
   }
 
   /**
+   * ButtonClick jadvaliga asoslangan timeseries — soat/kun/oy bo'yicha.
+   * Har bucket'da ikkala type sonini alohida va jami bilan qaytaradi:
+   *   [{ at, tg, call, total }, ...]
+   *
+   * Filter (ixtiyoriy): `type` — faqat 'tg' yoki faqat 'call' (undefined bo'lsa ikkalasi).
+   * DB sessiya timezone Asia/Tashkent bo'lgani uchun bucketlar Toshkent bo'yicha.
+   */
+  async getButtonClicksTimeseries(dto: {
+    type?: 'tg' | 'call';
+    from?: number;
+    to?: number;
+    bucket?: 'hour' | 'day' | 'month';
+    loadId?: number;
+  }) {
+    const bucket = dto.bucket ?? 'hour';
+    const now = Date.now();
+
+    let fromMs = dto.from;
+    const toMs = dto.to ?? now;
+    if (fromMs == null) {
+      const HOUR = 60 * 60 * 1000;
+      const DAY = 24 * HOUR;
+      if (bucket === 'hour') fromMs = now - 24 * HOUR;
+      else if (bucket === 'day') fromMs = now - 30 * DAY;
+      else fromMs = now - 365 * DAY;
+    }
+
+    const fromDate = this.floorTo(new Date(fromMs), bucket);
+    const toDate = this.floorTo(new Date(toMs), bucket);
+
+    const truncUnit: Record<'hour' | 'day' | 'month', string> = {
+      hour: 'hour',
+      day: 'day',
+      month: 'month',
+    };
+    const unit = truncUnit[bucket];
+
+    const conditions: Prisma.Sql[] = [
+      Prisma.sql`"createdAt" >= ${fromDate}`,
+      Prisma.sql`"createdAt" < ${this.addOne(toDate, bucket)}`,
+    ];
+    if (dto.type) conditions.push(Prisma.sql`"type" = ${dto.type}`);
+    if (dto.loadId) conditions.push(Prisma.sql`"loadId" = ${dto.loadId}`);
+    const whereSql = Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}`;
+
+    const rows: Array<{ bucket: Date; type: string; count: bigint }> =
+      await this.prisma.$queryRaw(
+        Prisma.sql`
+          SELECT date_trunc(${unit}, "createdAt") AS bucket, "type", COUNT(*)::bigint AS count
+          FROM "ButtonClick"
+          ${whereSql}
+          GROUP BY bucket, "type"
+          ORDER BY bucket ASC
+        `
+      );
+
+    // Xarita: bucketMs → { tg, call }
+    const perBucket = new Map<number, { tg: number; call: number }>();
+    for (const r of rows) {
+      const key = r.bucket.getTime();
+      const cur = perBucket.get(key) ?? { tg: 0, call: 0 };
+      if (r.type === 'tg') cur.tg = Number(r.count);
+      else if (r.type === 'call') cur.call = Number(r.count);
+      perBucket.set(key, cur);
+    }
+
+    const points: Array<{
+      at: string;
+      tg: number;
+      call: number;
+      total: number;
+    }> = [];
+    let totalTg = 0;
+    let totalCall = 0;
+    for (let d = fromDate; d <= toDate; d = this.addOne(d, bucket)) {
+      const b = perBucket.get(d.getTime()) ?? { tg: 0, call: 0 };
+      points.push({
+        at: this.formatLocalIso(d),
+        tg: b.tg,
+        call: b.call,
+        total: b.tg + b.call,
+      });
+      totalTg += b.tg;
+      totalCall += b.call;
+    }
+
+    return {
+      bucket,
+      timezone: 'Asia/Tashkent',
+      from: this.formatLocalIso(fromDate),
+      to: this.formatLocalIso(toDate),
+      totals: { tg: totalTg, call: totalCall, all: totalTg + totalCall },
+      points,
+    };
+  }
+
+  /**
    * 30 kundan eski RequestLog yozuvlarini o'chirib boradi.
    * Har kunlik ishga tushadi (00:00 UTC).
    */

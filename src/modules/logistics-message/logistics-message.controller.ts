@@ -19,6 +19,7 @@ import { JwtAuthGuard } from '@/modules/auth/guards/jwt-auth.guard';
 import { RolesGuard } from '@/modules/auth/guards/roles.guard';
 import { Roles } from '@/modules/auth/decorators/roles.decorator';
 import {
+  CallCountDto,
   IncrementCountsDto,
   ParseMessageDto,
   SendResultDto,
@@ -106,6 +107,18 @@ export class PostsController {
   })
   async incrementCounts(@Body() dto: IncrementCountsDto) {
     return this.logisticMessageService.incrementCounts(dto);
+  }
+
+  @Post('call-count')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      "Foydalanuvchi 'Telegram' yoki 'Qo\\'ng\\'iroq qilish' tugmasini bosganda chaqiriladi. Har bosish ButtonClick jadvaliga vaqti bilan yoziladi — soatlik/kunlik statistika uchun. Ochiq (public).",
+  })
+  @ApiBody({ type: CallCountDto })
+  @ApiOkResponse({ description: 'Yozildi.' })
+  async callCount(@Body() dto: CallCountDto) {
+    return this.logisticMessageService.trackButtonClick(dto);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)

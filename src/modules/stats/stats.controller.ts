@@ -5,7 +5,7 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 
-import { GetStatsDto } from './dto/get-stats.dto';
+import { GetButtonClicksDto, GetStatsDto } from './dto/get-stats.dto';
 import { StatsService } from './stats.service';
 
 /**
@@ -45,5 +45,15 @@ export class StatsController {
   })
   async timeseries(@Query() dto: GetStatsDto) {
     return this.statsService.getTimeseries(dto);
+  }
+
+  @Get('button-clicks')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      "'Telegram' va 'Qo\\'ng\\'iroq qilish' tugmalari bosilishi statistikasi. Har bucket'da tg va call sonini alohida va jami bilan qaytaradi.",
+  })
+  async buttonClicks(@Query() dto: GetButtonClicksDto) {
+    return this.statsService.getButtonClicksTimeseries(dto);
   }
 }

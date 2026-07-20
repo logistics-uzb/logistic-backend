@@ -21,6 +21,7 @@ import axios from 'axios';
 import { PrismaService } from '../prisma/prisma.service';
 import { ConfigService } from '@nestjs/config';
 import {
+  CallCountDto,
   IncrementCountsDto,
   SendTelegramRawDto,
   SendTelegramStructuredDto,
@@ -1629,6 +1630,25 @@ ${text}
       requested: dto.loadIds.length,
       type: dto.type,
     };
+  }
+
+  /**
+   * "Telegram" yoki "Qo'ng'iroq qilish" tugmasi bosilganda chaqiriladi.
+   * Har bosish ButtonClick jadvaliga alohida yozuv sifatida tushadi —
+   * soatlik/kunlik grafik uchun. Fire-and-forget (Prisma await'lanadi lekin
+   * frontend uchun tez javob).
+   */
+  async trackButtonClick(dto: CallCountDto) {
+    await this.prisma.buttonClick.create({
+      data: {
+        type: dto.type,
+        loadId: dto.loadId,
+      },
+    });
+    this.logger.log(
+      `Button click: type=${dto.type} loadId=${dto.loadId ?? '-'}`
+    );
+    return { ok: true, type: dto.type };
   }
 
   /**
