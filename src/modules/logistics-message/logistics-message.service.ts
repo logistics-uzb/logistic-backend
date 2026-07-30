@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Inject,
   Injectable,
   Logger,
@@ -1846,18 +1847,50 @@ ${text}
     return lines.join('\n');
   }
 
-  async deleteMessage(id: number) {
+  /**
+   * Post o'chirish.
+   * - ADMIN — istalgan postni o'chira oladi
+   * - DISPATCHER — faqat o'zi yaratgan postni (createdById === userId) o'chira oladi
+   * - Bo'lmasa 403 Forbidden xato
+   *
+   * Cron (`deleteOldMessagesByCron`) foydalanuvchi identifikatsiyasisiz chaqiradi —
+   * shu holatda userId=undefined bo'lsa auth tekshirish o'tkazib yuboriladi.
+   */
+  async deleteMessage(
+    id: number,
+    userId?: number,
+    role?: 'ADMIN' | 'DISPATCHER'
+  ) {
     const existing = await this.prisma.logisticMessage.findUnique({
       where: { id },
+      select: { id: true, createdById: true, source: true },
     });
 
     if (!existing) {
       throw new NotFoundException(`Message with id ${id} not found`);
     }
 
+    // Auth tekshiruvi — faqat userId berilgan bo'lsa (ya'ni HTTP DELETE endpoint'dan
+    // kelgan bo'lsa; cron/internal chaqiruv paytida userId=undefined)
+    if (userId !== undefined && role) {
+      if (role === 'DISPATCHER') {
+        // Dispatcher faqat o'z postini o'chira oladi
+        if (existing.createdById !== userId) {
+          throw new ForbiddenException(
+            "Bu post sizniki emas — faqat o'z postingizni o'chira olasiz"
+          );
+        }
+      }
+      // ADMIN — istalgan postni o'chira oladi, tekshiruv yo'q
+    }
+
     await this.prisma.logisticMessage.delete({
       where: { id },
     });
+
+    this.logger.log(
+      `Delete post id=${id} byUserId=${userId ?? 'cron/internal'} role=${role ?? '-'}`
+    );
 
     return {
       success: true,

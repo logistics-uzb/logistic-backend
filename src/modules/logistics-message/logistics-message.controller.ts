@@ -206,10 +206,23 @@ export class PostsController {
     return this.logisticMessageService.updateMessage(Number(id), dto);
   }
 
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('DISPATCHER', 'ADMIN')
   @Delete(':id')
   @HttpCode(HttpStatus.OK)
-  async deleteMessage(@Param('id') id: string) {
-    return this.logisticMessageService.deleteMessage(Number(id));
+  @ApiOperation({
+    summary:
+      "Postni o'chirish. DISPATCHER — faqat o'zi yaratgan postni. ADMIN — istalganini. Boshqaning postini o'chirishga urunish 403 xato beradi.",
+  })
+  async deleteMessage(
+    @Param('id') id: string,
+    @Req() req: { user: { userId: number; role: 'ADMIN' | 'DISPATCHER' } }
+  ) {
+    return this.logisticMessageService.deleteMessage(
+      Number(id),
+      req.user.userId,
+      req.user.role
+    );
   }
   // @Patch('restore/:id')
   // @HttpCode(HttpStatus.OK)
