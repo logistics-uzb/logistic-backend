@@ -32,6 +32,7 @@ import { ApiBearerAuth, ApiBody, ApiExtraModels, ApiForbiddenResponse, ApiOkResp
 import {
   CreateLogisticMessageDto,
   GetLogisticsMessagesDto,
+  PaginationDto,
   UpdateLogisticMessageDto,
 } from '@/types/application';
 import { query } from 'express';
@@ -164,14 +165,14 @@ export class PostsController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
-      "Joriy dispatcher o'zi yuborgan postlarni ko'radi (source=DISPATCHER + createdById=me). Filter/pagination va MTProto sendStatus bilan.",
+      "Joriy dispatcher o'zi yuborgan barcha postlar. Faqat pagination (page, limit) — boshqa filter yo'q.",
   })
   @ApiOkResponse({
     description:
-      "Dispatcher'ning o'z postlari ro'yxati. Har bir post uchun sendStatus, sendResults va boshqa navbat maydonlari ham qaytadi.",
+      "Dispatcher'ning o'z postlari ro'yxati sahifalash bilan.",
   })
   async getMyPosts(
-    @Query() query: GetLogisticsMessagesDto,
+    @Query() query: PaginationDto,
     @Req() req: { user: { userId: number; role: 'ADMIN' | 'DISPATCHER' } }
   ) {
     return this.logisticMessageService.getMyPosts(req.user.userId, query);
