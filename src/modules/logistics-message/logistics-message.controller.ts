@@ -158,6 +158,25 @@ export class PostsController {
     return this.logisticMessageService.getAllMessagesWithFormat(query);
   }
 
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('DISPATCHER', 'ADMIN')
+  @Get('my')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      "Joriy dispatcher o'zi yuborgan postlarni ko'radi (source=DISPATCHER + createdById=me). Filter/pagination va MTProto sendStatus bilan.",
+  })
+  @ApiOkResponse({
+    description:
+      "Dispatcher'ning o'z postlari ro'yxati. Har bir post uchun sendStatus, sendResults va boshqa navbat maydonlari ham qaytadi.",
+  })
+  async getMyPosts(
+    @Query() query: GetLogisticsMessagesDto,
+    @Req() req: { user: { userId: number; role: 'ADMIN' | 'DISPATCHER' } }
+  ) {
+    return this.logisticMessageService.getMyPosts(req.user.userId, query);
+  }
+
   @Sse('all/sse')
   getAllMessagesSse(@Query() query: GetLogisticsMessagesDto) {
     const intervalMs =

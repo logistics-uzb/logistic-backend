@@ -49,6 +49,15 @@ export class LogisticsGateway {
     // Agar logika ruxsat bersa → botga yuboramiz
   }
 
+  // 3️⃣.5 logistic-whatsapp-scrapping servisidan keladigan WhatsApp xabarlar
+  @SubscribeMessage('whatsapp:new_message_logistics')
+  async handleWhatsAppMessage(_, payload: any) {
+    this.logger.debug(
+      `whatsapp:new_message_logistics waId=${payload?.waMessageId} chat=${payload?.chatId} len=${payload?.text?.length ?? 0}`
+    );
+    return this.socketService.processWhatsAppMessage(payload);
+  }
+
   // 3️⃣ Client so‘rov yuboradi: GET_LOGISTICS
   @SubscribeMessage('get_logistics')
   async handleGetLogistics(

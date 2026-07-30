@@ -64,6 +64,15 @@ model LogisticMessage {
   pickupDate        DateTime?
   phoneNumber       String?
 
+  // Xabar yuboruvchi haqida ma'lumot (Telegram: get_sender'dan).
+  // OpenAI klassifikatsiyasiga qaramay saqlanadi — analyzer'dan o'tishi shart emas.
+  // senderId — String (Telegram user_id 2^31 dan katta bo'lishi mumkin, Int'ga sig'maydi).
+  // WhatsApp source uchun bu maydonlar null (senderPhone allaqachon `text` ichida bor).
+  senderTgUsername  String?
+  senderFullName    String?
+  senderId          String?
+  postAuthor        String?
+
   sentToTelegramAt  DateTime?
   isComplete        Boolean @default(false)
 

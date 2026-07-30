@@ -1,9 +1,11 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectBot } from 'nestjs-telegraf';
 import { Telegraf, Context } from 'telegraf';
 
 @Injectable()
 export class TelegramService {
+  private readonly logger = new Logger(TelegramService.name);
+
   private sentimentTopicMap = {
     good: Number(process.env.TELEGRAM_TOPIC_ID_GOOD_NEWS),
     neutral: Number(process.env.TELEGRAM_TOPIC_ID_NEYRTAL_NEWS),
@@ -36,9 +38,8 @@ export class TelegramService {
   ) {
     try {
       const chatId = process.env.TELEGRAM_GROUP_ID || '@news_day_scrapping';
-      // const topicId = Number(topicId);
       if (!chatId) {
-        // this.logger.error('TELEGRAM_CHAT_ID topilmadi!');
+        this.logger.error('TELEGRAM_GROUP_ID .env da topilmadi');
         return;
       }
 
@@ -47,9 +48,18 @@ export class TelegramService {
         message_thread_id: topicId,
       });
       return result;
-    } catch (error) {
-      // this.logger.error('Guruhga xabar yuborishda xato:', error);
-      throw new Error('Telegram guruhga xabar yuborilmadi');
+    } catch (error: any) {
+      // Telegraf xatosini to'liq log qilamiz — endi haqiqiy sababni ko'ramiz.
+      const desc =
+        error?.response?.description ||
+        error?.description ||
+        error?.message ||
+        String(error);
+      const code = error?.response?.error_code ?? error?.code ?? '-';
+      this.logger.error(
+        `sendToGroup xato chatId=${process.env.TELEGRAM_GROUP_ID} topicId=${topicId} code=${code}: ${desc}`
+      );
+      throw new Error(`Telegram guruhga xabar yuborilmadi: ${desc}`);
     }
   }
   getTopicIdBySentiment(sentiment: 'good' | 'neutral' | 'bad'): number {
