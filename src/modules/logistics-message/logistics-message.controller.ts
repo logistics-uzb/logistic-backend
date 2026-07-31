@@ -30,6 +30,7 @@ import { InternalSecretGuard } from '@/common/guards/internal-secret.guard';
 import { UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiBody, ApiExtraModels, ApiForbiddenResponse, ApiOkResponse, ApiOperation, ApiTags, getSchemaPath } from '@nestjs/swagger';
 import {
+  BackendPostsQueryDto,
   CreateLogisticMessageDto,
   GetLogisticsMessagesDto,
   PaginationDto,
@@ -157,6 +158,22 @@ export class PostsController {
   @Get('formatted')
   async getAllMessagesWithFormat(@Query() query: GetLogisticsMessagesDto) {
     return this.logisticMessageService.getAllMessagesWithFormat(query);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
+  @Get('for-backend')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      "ADMIN uchun to'liq filter + universal search + sorting + pagination. Faqat ADMIN roli JWT bilan kira oladi. Barcha LogisticMessage maydonlari bo'yicha qidiruv.",
+  })
+  @ApiOkResponse({
+    description:
+      'Filterlangan sahifalangan ro\'yxat. Har post barcha maydonlari bilan + createdBy relation.',
+  })
+  async getPostsForBackend(@Query() query: BackendPostsQueryDto) {
+    return this.logisticMessageService.getPostsForBackend(query);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)

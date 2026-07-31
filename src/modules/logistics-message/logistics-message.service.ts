@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 
 import {
+  BackendPostsQueryDto,
   CreateLogisticMessageDto,
   GetLogisticsMessagesDto,
   UpdateLogisticMessageDto,
@@ -1668,6 +1669,214 @@ ${text}
       updated: result.count,
       requested: dto.loadIds.length,
       type: dto.type,
+    };
+  }
+
+  /**
+   * Backend/admin panel uchun to'liq filter + universal search + pagination.
+   * Auth (JWT) talab qilinadi. `getAllMessages` va boshqa mavjud metodlarga
+   * tegilmagan — bu alohida yozildi.
+   *
+   * `search` — text, title, phoneNumber, channelName, senderFullName,
+   * senderTgUsername ustunlarida `contains` (case-insensitive) qidiruv.
+   */
+  async getPostsForBackend(params: BackendPostsQueryDto) {
+    // ── Pagination ──
+    const page = +params?.page && +params.page > 0 ? +params.page : 1;
+    const limit =
+      +params?.limit && +params.limit > 0 && +params.limit <= 100
+        ? +params.limit
+        : 20;
+    const skip = (page - 1) * limit;
+
+    // ── Universal search — OR bo'yicha bir necha ustun ──
+    const where: Prisma.LogisticMessageWhereInput = {};
+    if (params.search && params.search.trim().length > 0) {
+      const q = params.search.trim();
+      where.OR = [
+        { text: { contains: q, mode: 'insensitive' } },
+        { title: { contains: q, mode: 'insensitive' } },
+        { phoneNumber: { contains: q, mode: 'insensitive' } },
+        { channelName: { contains: q, mode: 'insensitive' } },
+        { senderFullName: { contains: q, mode: 'insensitive' } },
+        { senderTgUsername: { contains: q, mode: 'insensitive' } },
+      ];
+    }
+
+    // ── Basic filters ──
+    if (params.channelName) where.channelName = params.channelName;
+    if (params.aiStatus) where.aiStatus = params.aiStatus;
+    if (params.source) where.source = params.source;
+    if (params.createdById !== undefined) where.createdById = params.createdById;
+    if (params.isActual !== undefined) where.isActual = params.isActual;
+    if (params.isComplete !== undefined) {
+      where.isComplete = params.isComplete === 'TRUE';
+    }
+    if (params.sendStatus) where.sendStatus = params.sendStatus;
+
+    // ── Route ──
+    if (params.countryFrom) where.countryFrom = params.countryFrom;
+    if (params.countryTo) where.countryTo = params.countryTo;
+    if (params.regionFrom) where.regionFrom = params.regionFrom;
+    if (params.regionTo) where.regionTo = params.regionTo;
+
+    // ── Weight ──
+    if (params.weightMin !== undefined || params.weightMax !== undefined) {
+      where.weight = {
+        ...(params.weightMin !== undefined ? { gte: params.weightMin } : {}),
+        ...(params.weightMax !== undefined ? { lte: params.weightMax } : {}),
+      };
+    }
+
+    // ── Content ──
+    if (params.title) {
+      where.title = { contains: params.title, mode: 'insensitive' };
+    }
+    if (params.cargoUnit) where.cargoUnit = params.cargoUnit;
+    if (params.vehicleType) {
+      where.vehicleType = {
+        contains: params.vehicleType,
+        mode: 'insensitive',
+      };
+    }
+
+    // ── Payment ──
+    if (params.paymentType) where.paymentType = params.paymentType;
+    if (
+      params.paymentAmountMin !== undefined ||
+      params.paymentAmountMax !== undefined
+    ) {
+      where.paymentAmount = {
+        ...(params.paymentAmountMin !== undefined
+          ? { gte: params.paymentAmountMin }
+          : {}),
+        ...(params.paymentAmountMax !== undefined
+          ? { lte: params.paymentAmountMax }
+          : {}),
+      };
+    }
+    if (params.paymentCurrency) where.paymentCurrency = params.paymentCurrency;
+    if (params.hasAdvancePayment !== undefined) {
+      where.advancePayment =
+        params.hasAdvancePayment === 'YES' ? { not: null } : null;
+    }
+
+    // ── Phone / sender ──
+    if (params.phoneNumber) {
+      where.phoneNumber = {
+        contains: params.phoneNumber,
+        mode: 'insensitive',
+      };
+    }
+    if (params.senderFullName) {
+      where.senderFullName = {
+        contains: params.senderFullName,
+        mode: 'insensitive',
+      };
+    }
+    if (params.senderTgUsername) {
+      where.senderTgUsername = params.senderTgUsername;
+    }
+
+    // ── Distance ──
+    if (
+      params.distanceKmMin !== undefined ||
+      params.distanceKmMax !== undefined
+    ) {
+      where.distanceKm = {
+        ...(params.distanceKmMin !== undefined
+          ? { gte: params.distanceKmMin }
+          : {}),
+        ...(params.distanceKmMax !== undefined
+          ? { lte: params.distanceKmMax }
+          : {}),
+      };
+    }
+    if (
+      params.pricePerKmMin !== undefined ||
+      params.pricePerKmMax !== undefined
+    ) {
+      where.pricePerKm = {
+        ...(params.pricePerKmMin !== undefined
+          ? { gte: params.pricePerKmMin }
+          : {}),
+        ...(params.pricePerKmMax !== undefined
+          ? { lte: params.pricePerKmMax }
+          : {}),
+      };
+    }
+
+    // ── Engagement ──
+    if (params.viewCountMin !== undefined) {
+      where.viewCount = { gte: params.viewCountMin };
+    }
+    if (params.callCountMin !== undefined) {
+      where.callCount = { gte: params.callCountMin };
+    }
+
+    // ── Date ranges ──
+    const toDate = (v?: number): Date | undefined => {
+      if (v === undefined || v === null) return undefined;
+      const d = new Date(Number(v));
+      return isNaN(d.getTime()) ? undefined : d;
+    };
+    {
+      const from = toDate(params.pickupDateFrom);
+      const to = toDate(params.pickupDateTo);
+      if (from || to) {
+        where.pickupDate = {
+          ...(from ? { gte: from } : {}),
+          ...(to ? { lte: to } : {}),
+        };
+      }
+    }
+    {
+      const from = toDate(params.sentFrom);
+      const to = toDate(params.sentTo);
+      if (from || to) {
+        where.sentToTelegramAt = {
+          ...(from ? { gte: from } : {}),
+          ...(to ? { lte: to } : {}),
+        };
+      }
+    }
+    {
+      const from = toDate(params.createdFrom);
+      const to = toDate(params.createdTo);
+      if (from || to) {
+        where.createdAt = {
+          ...(from ? { gte: from } : {}),
+          ...(to ? { lte: to } : {}),
+        };
+      }
+    }
+
+    // ── Sorting ──
+    const orderByField = params.orderBy ?? 'createdAt';
+    const orderDir = params.order ?? 'desc';
+    const orderBy: Prisma.LogisticMessageOrderByWithRelationInput = {
+      [orderByField]: orderDir,
+    };
+
+    // ── DB queries ──
+    const [data, total] = await Promise.all([
+      this.prisma.logisticMessage.findMany({
+        where,
+        orderBy,
+        skip,
+        take: limit,
+        include: { createdBy: { select: CREATED_BY_SELECT } },
+      }),
+      this.prisma.logisticMessage.count({ where }),
+    ]);
+
+    return {
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit),
+      count: data.length,
+      data,
     };
   }
 
