@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { Prisma } from '@prisma/client';
 
@@ -21,7 +22,80 @@ const TZ_OFFSET_MS = TZ_OFFSET_HOURS * 60 * 60 * 1000;
 export class StatsService {
   private readonly logger = new Logger(StatsService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly configService: ConfigService
+  ) {}
+
+  /**
+   * Tashqi (bot backend) userlar statistikasi API'ga proxy.
+   * `.env` da `USERS_STATS_API_URL` sozlangan bo'lsa chaqiradi. Aks holda
+   * bo'sh natija qaytaradi (o'z metrikalari buzilmasin).
+   *
+   * Tashqi API kutilgan javob shakli:
+   *   { data: [{ date: "YYYY-MM-DD" | "YYYY-MM-DDTHH:mm", users: N }], total: N }
+   *
+   * Bu metod javobni bizning "bucket → count" xarita ko'rinishida qaytaradi
+   * (getAllInOne bilan birlashtirish uchun).
+   */
+  async fetchUsersStats(
+    fromMs: number,
+    toMs: number,
+    bucket: 'hour' | 'day' | 'month'
+  ): Promise<{ perBucket: Map<number, number>; total: number; ok: boolean }> {
+    const baseUrl = this.configService.get<string>('USERS_STATS_API_URL');
+    if (!baseUrl) {
+      return { perBucket: new Map(), total: 0, ok: false };
+    }
+
+    // Month bucketni tashqi API qo'llab-quvvatlamasa — kunlik so'rab, aggregate qilamiz.
+    // Hozircha day/hour ni to'g'ridan-to'g'ri o'tkazamiz.
+    const supportedBucket = bucket === 'month' ? 'day' : bucket;
+    const url = `${baseUrl.replace(/\/$/, '')}?from=${fromMs}&to=${toMs}&bucket=${supportedBucket}`;
+
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+      if (!res.ok) {
+        this.logger.warn(`Users API ${res.status} — ${url}`);
+        return { perBucket: new Map(), total: 0, ok: false };
+      }
+      const json: any = await res.json();
+      const rows: Array<{ date: string; users: number }> = json?.data ?? [];
+
+      const perBucket = new Map<number, number>();
+      let total = 0;
+      for (const row of rows) {
+        const bucketDate = this.parseTashkentDateStr(row.date, bucket);
+        if (!bucketDate) continue;
+        perBucket.set(bucketDate.getTime(), row.users);
+        total += row.users;
+      }
+      return { perBucket, total, ok: true };
+    } catch (err: any) {
+      this.logger.error(
+        `Users API chaqiruv xatosi (${url}): ${err?.message ?? err}`
+      );
+      return { perBucket: new Map(), total: 0, ok: false };
+    }
+  }
+
+  /**
+   * "2026-08-01" yoki "2026-08-05T14:00" ni Toshkent bucket boshiga aylantiradi.
+   * Natija — UTC Date (bu bucket boshiga to'g'ri keladigan UTC moment).
+   */
+  private parseTashkentDateStr(
+    s: string,
+    bucket: 'hour' | 'day' | 'month'
+  ): Date | null {
+    if (!s) return null;
+    const isoWithTz =
+      s.length <= 10
+        ? `${s}T00:00:00+05:00` // day format
+        : `${s.length === 16 ? s + ':00' : s}+05:00`; // hour "2026-08-05T14:00" → "2026-08-05T14:00:00+05:00"
+    const d = new Date(isoWithTz);
+    if (isNaN(d.getTime())) return null;
+    return this.floorTo(d, bucket);
+  }
 
   /**
    * Umumiy sonlar: jami, muvaffaqiyatli (2xx), xatolar (>=400),
@@ -325,6 +399,209 @@ export class StatsService {
       to: this.formatLocalIso(toDate),
       totals: { tg: totalTg, call: totalCall, all: totalTg + totalCall },
       points,
+    };
+  }
+
+  /**
+   * Birlashgan statistika — barcha metrikani bitta chaqiruv orqali beradi:
+   *   view — ButtonClick.type='view' bosishlari (post ko'rilgan)
+   *   call — ButtonClick.type='call' bosishlari (qo'ng'iroq tugmasi)
+   *   tg   — ButtonClick.type='tg' bosishlari (Telegram tugmasi)
+   *   getAll — /v1/post/all endpoint chaqiruvlari (RequestLog dan)
+   *
+   * Filter (ixtiyoriy): from/to (UNIX ms), bucket (hour/day/month, default: hour).
+   * Toshkent timezone (DB session).
+   *
+   * Response shape:
+   *   {
+   *     bucket, timezone, from, to,
+   *     totals: { view, call, tg, getAll, all },
+   *     points: [{ date, view, call, tg, getAll, total }, ...]
+   *   }
+   */
+  async getAllInOne(dto: {
+    from?: number;
+    to?: number;
+    bucket?: 'hour' | 'day' | 'month';
+  }) {
+    const bucket = dto.bucket ?? 'hour';
+    const now = Date.now();
+
+    let fromMs = dto.from;
+    const toMs = dto.to ?? now;
+    if (fromMs == null) {
+      const HOUR = 60 * 60 * 1000;
+      const DAY = 24 * HOUR;
+      if (bucket === 'hour') fromMs = now - 24 * HOUR;
+      else if (bucket === 'day') fromMs = now - 30 * DAY;
+      else fromMs = now - 365 * DAY;
+    }
+
+    const fromDate = this.floorTo(new Date(fromMs), bucket);
+    const toDate = this.floorTo(new Date(toMs), bucket);
+    const rangeEnd = this.addOne(toDate, bucket);
+
+    const truncUnit: Record<'hour' | 'day' | 'month', string> = {
+      hour: 'hour',
+      day: 'day',
+      month: 'month',
+    };
+    const unit = truncUnit[bucket];
+
+    // ── Parallel: 3 ta manba ──
+    //   1) ButtonClick — view/call/tg (bizning DB)
+    //   2) RequestLog  — /v1/post/all (bizning DB)
+    //   3) Users API   — tashqi bot backend (.env orqali)
+    const [buttonRows, requestRows, users] = await Promise.all([
+      this.prisma.$queryRaw<Array<{ bucket: Date; type: string; count: bigint }>>(
+        Prisma.sql`
+          SELECT date_trunc(${unit}, "createdAt") AS bucket, "type", COUNT(*)::bigint AS count
+          FROM "ButtonClick"
+          WHERE "createdAt" >= ${fromDate} AND "createdAt" < ${rangeEnd}
+          GROUP BY bucket, "type"
+          ORDER BY bucket ASC
+        `
+      ),
+      this.prisma.$queryRaw<Array<{ bucket: Date; count: bigint }>>(
+        Prisma.sql`
+          SELECT date_trunc(${unit}, "createdAt") AS bucket, COUNT(*)::bigint AS count
+          FROM "RequestLog"
+          WHERE "createdAt" >= ${fromDate}
+            AND "createdAt" < ${rangeEnd}
+            AND "path" LIKE '/v1/post/all%'
+          GROUP BY bucket
+          ORDER BY bucket ASC
+        `
+      ),
+      this.fetchUsersStats(fromDate.getTime(), rangeEnd.getTime(), bucket),
+    ]);
+
+    // ── Xaritalarga solamiz ──
+    const btnMap = new Map<number, { view: number; call: number; tg: number }>();
+    for (const r of buttonRows) {
+      const key = r.bucket.getTime();
+      const cur = btnMap.get(key) ?? { view: 0, call: 0, tg: 0 };
+      if (r.type === 'view') cur.view = Number(r.count);
+      else if (r.type === 'call') cur.call = Number(r.count);
+      else if (r.type === 'tg') cur.tg = Number(r.count);
+      btnMap.set(key, cur);
+    }
+    const reqMap = new Map<number, number>();
+    for (const r of requestRows) {
+      reqMap.set(r.bucket.getTime(), Number(r.count));
+    }
+
+    // ── Barcha bucketlarni to'ldiramiz (bo'shlariga 0) ──
+    const points: Array<{
+      date: string;
+      view: number;
+      call: number;
+      tg: number;
+      getAll: number;
+      users: number;
+      total: number;
+    }> = [];
+    let tView = 0;
+    let tCall = 0;
+    let tTg = 0;
+    let tGetAll = 0;
+    let tUsers = 0;
+
+    for (let d = fromDate; d <= toDate; d = this.addOne(d, bucket)) {
+      const key = d.getTime();
+      const b = btnMap.get(key) ?? { view: 0, call: 0, tg: 0 };
+      const getAll = reqMap.get(key) ?? 0;
+      const usersCount = users.perBucket.get(key) ?? 0;
+      const total = b.view + b.call + b.tg + getAll + usersCount;
+
+      points.push({
+        date: this.formatLocalIso(d),
+        view: b.view,
+        call: b.call,
+        tg: b.tg,
+        getAll,
+        users: usersCount,
+        total,
+      });
+
+      tView += b.view;
+      tCall += b.call;
+      tTg += b.tg;
+      tGetAll += getAll;
+      tUsers += usersCount;
+    }
+
+    return {
+      bucket,
+      timezone: 'Asia/Tashkent',
+      from: this.formatLocalIso(fromDate),
+      to: this.formatLocalIso(toDate),
+      totals: {
+        view: tView,
+        call: tCall,
+        tg: tTg,
+        getAll: tGetAll,
+        users: tUsers,
+        all: tView + tCall + tTg + tGetAll + tUsers,
+      },
+      sources: {
+        users: {
+          ok: users.ok,
+          note: users.ok ? undefined : 'USERS_STATS_API_URL yo\'q yoki tashqi API mavjud emas',
+        },
+      },
+      points,
+    };
+  }
+
+  /**
+   * Faqat foydalanuvchilar statistikasi — tashqi API'ga proxy.
+   * `.env` da `USERS_STATS_API_URL` sozlangan bo'lishi shart.
+   */
+  async getUsersStats(dto: {
+    from?: number;
+    to?: number;
+    bucket?: 'hour' | 'day' | 'month';
+  }) {
+    const bucket = dto.bucket ?? 'day';
+    const now = Date.now();
+
+    let fromMs = dto.from;
+    const toMs = dto.to ?? now;
+    if (fromMs == null) {
+      const HOUR = 60 * 60 * 1000;
+      const DAY = 24 * HOUR;
+      if (bucket === 'hour') fromMs = now - 24 * HOUR;
+      else if (bucket === 'day') fromMs = now - 30 * DAY;
+      else fromMs = now - 365 * DAY;
+    }
+
+    const fromDate = this.floorTo(new Date(fromMs), bucket);
+    const toDate = this.floorTo(new Date(toMs), bucket);
+    const rangeEnd = this.addOne(toDate, bucket);
+
+    const users = await this.fetchUsersStats(
+      fromDate.getTime(),
+      rangeEnd.getTime(),
+      bucket
+    );
+
+    const data: Array<{ date: string; users: number }> = [];
+    let total = 0;
+    for (let d = fromDate; d <= toDate; d = this.addOne(d, bucket)) {
+      const usersCount = users.perBucket.get(d.getTime()) ?? 0;
+      data.push({ date: this.formatLocalIso(d), users: usersCount });
+      total += usersCount;
+    }
+
+    return {
+      bucket,
+      timezone: 'Asia/Tashkent',
+      from: this.formatLocalIso(fromDate),
+      to: this.formatLocalIso(toDate),
+      total,
+      sourceOk: users.ok,
+      data,
     };
   }
 

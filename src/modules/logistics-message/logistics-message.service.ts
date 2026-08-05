@@ -1656,10 +1656,23 @@ ${text}
       return { updated: 0, requested: dto.loadIds.length };
     }
 
+    // 1) Kumulyativ counterni oshiramiz — kartochkadagi umumiy son uchun
     const field = dto.type === 'view' ? 'viewCount' : 'callCount';
     const result = await this.prisma.logisticMessage.updateMany({
       where: { id: { in: ids } },
       data: { [field]: { increment: 1 } },
+    });
+
+    // 2) Har bir bosishni ButtonClick jadvaliga alohida yozamiz — soatlik/kunlik
+    //    stats va yagona /v1/stats/all-in-one uchun. Fire-and-forget.
+    Promise.all(
+      ids.map((loadId) =>
+        this.prisma.buttonClick.create({
+          data: { type: dto.type, loadId },
+        })
+      )
+    ).catch((err) => {
+      this.logger.error(`incrementCounts ButtonClick yozib bo'lmadi: ${err?.message}`);
     });
 
     this.logger.log(

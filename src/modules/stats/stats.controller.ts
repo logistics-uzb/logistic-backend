@@ -5,7 +5,11 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 
-import { GetButtonClicksDto, GetStatsDto } from './dto/get-stats.dto';
+import {
+  GetAllInOneDto,
+  GetButtonClicksDto,
+  GetStatsDto,
+} from './dto/get-stats.dto';
 import { StatsService } from './stats.service';
 
 /**
@@ -55,5 +59,25 @@ export class StatsController {
   })
   async buttonClicks(@Query() dto: GetButtonClicksDto) {
     return this.statsService.getButtonClicksTimeseries(dto);
+  }
+
+  @Get('all-in-one')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      "Barcha metrikalar bir chaqiruvda: view, call, tg (ButtonClick), getAll (/v1/post/all chaqiruvlari), users (tashqi bot backend). Toshkent timezone, bo'sh bucketlar 0.",
+  })
+  async allInOne(@Query() dto: GetAllInOneDto) {
+    return this.statsService.getAllInOne(dto);
+  }
+
+  @Get('users')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Tashqi bot backend userlar statistikasi (proxy). USERS_STATS_API_URL env sozlanishi kerak.',
+  })
+  async users(@Query() dto: GetAllInOneDto) {
+    return this.statsService.getUsersStats(dto);
   }
 }

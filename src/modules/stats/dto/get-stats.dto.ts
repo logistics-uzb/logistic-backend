@@ -53,6 +53,35 @@ export class GetStatsDto {
 }
 
 /**
+ * Barcha metrikalarni birga qaytarish uchun filter (yagona stats endpoint).
+ * Bucket bo'yicha view/call/tg/getAll sonlari.
+ */
+export class GetAllInOneDto {
+  @ApiPropertyOptional({ description: 'Boshlanish vaqti (UNIX ms).', type: Number })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  from?: number;
+
+  @ApiPropertyOptional({ description: 'Tugash vaqti (UNIX ms).', type: Number })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  to?: number;
+
+  @ApiPropertyOptional({
+    enum: ['hour', 'day', 'month'],
+    default: 'hour',
+    description: 'Timeseries bucketi.',
+  })
+  @IsOptional()
+  @IsIn(['hour', 'day', 'month'])
+  bucket?: 'hour' | 'day' | 'month';
+}
+
+/**
  * Button click statistikasi (Telegram / Qo'ng'iroq) uchun filterlar.
  */
 export class GetButtonClicksDto {
