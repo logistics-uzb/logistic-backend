@@ -449,8 +449,8 @@ export class StatsService {
     const unit = truncUnit[bucket];
 
     // ── Parallel: 3 ta manba ──
-    //   1) ButtonClick — view/call/tg (bizning DB)
-    //   2) RequestLog  — /v1/post/all (bizning DB)
+    //   1) ButtonClick — call/tg (bizning DB, /v1/post/button-clicks ma'lumoti)
+    //   2) RequestLog  — /v1/post/all (bizning DB) → `view` sifatida
     //   3) Users API   — tashqi bot backend (.env orqali)
     const [buttonRows, requestRows, users] = await Promise.all([
       this.prisma.$queryRaw<Array<{ bucket: Date; type: string; count: bigint }>>(
@@ -458,6 +458,7 @@ export class StatsService {
           SELECT date_trunc(${unit}, "createdAt") AS bucket, "type", COUNT(*)::bigint AS count
           FROM "ButtonClick"
           WHERE "createdAt" >= ${fromDate} AND "createdAt" < ${rangeEnd}
+            AND "type" IN ('tg', 'call')
           GROUP BY bucket, "type"
           ORDER BY bucket ASC
         `
@@ -469,6 +470,7 @@ export class StatsService {
           WHERE "createdAt" >= ${fromDate}
             AND "createdAt" < ${rangeEnd}
             AND "path" LIKE '/v1/post/all%'
+            AND "method" = 'GET'
           GROUP BY bucket
           ORDER BY bucket ASC
         `
@@ -477,18 +479,19 @@ export class StatsService {
     ]);
 
     // ── Xaritalarga solamiz ──
-    const btnMap = new Map<number, { view: number; call: number; tg: number }>();
+    // btnMap — tg va call clicks (button-clicks endpoint bilan mos)
+    const btnMap = new Map<number, { call: number; tg: number }>();
     for (const r of buttonRows) {
       const key = r.bucket.getTime();
-      const cur = btnMap.get(key) ?? { view: 0, call: 0, tg: 0 };
-      if (r.type === 'view') cur.view = Number(r.count);
-      else if (r.type === 'call') cur.call = Number(r.count);
+      const cur = btnMap.get(key) ?? { call: 0, tg: 0 };
+      if (r.type === 'call') cur.call = Number(r.count);
       else if (r.type === 'tg') cur.tg = Number(r.count);
       btnMap.set(key, cur);
     }
-    const reqMap = new Map<number, number>();
+    // viewMap — /v1/post/all chaqiruvlari (by-path endpoint bilan mos)
+    const viewMap = new Map<number, number>();
     for (const r of requestRows) {
-      reqMap.set(r.bucket.getTime(), Number(r.count));
+      viewMap.set(r.bucket.getTime(), Number(r.count));
     }
 
     // ── Barcha bucketlarni to'ldiramiz (bo'shlariga 0) ──
@@ -497,37 +500,33 @@ export class StatsService {
       view: number;
       call: number;
       tg: number;
-      getAll: number;
       users: number;
       total: number;
     }> = [];
     let tView = 0;
     let tCall = 0;
     let tTg = 0;
-    let tGetAll = 0;
     let tUsers = 0;
 
     for (let d = fromDate; d <= toDate; d = this.addOne(d, bucket)) {
       const key = d.getTime();
-      const b = btnMap.get(key) ?? { view: 0, call: 0, tg: 0 };
-      const getAll = reqMap.get(key) ?? 0;
+      const b = btnMap.get(key) ?? { call: 0, tg: 0 };
+      const view = viewMap.get(key) ?? 0;
       const usersCount = users.perBucket.get(key) ?? 0;
-      const total = b.view + b.call + b.tg + getAll + usersCount;
+      const total = view + b.call + b.tg + usersCount;
 
       points.push({
         date: this.formatLocalIso(d),
-        view: b.view,
+        view,
         call: b.call,
         tg: b.tg,
-        getAll,
         users: usersCount,
         total,
       });
 
-      tView += b.view;
+      tView += view;
       tCall += b.call;
       tTg += b.tg;
-      tGetAll += getAll;
       tUsers += usersCount;
     }
 
@@ -540,14 +539,17 @@ export class StatsService {
         view: tView,
         call: tCall,
         tg: tTg,
-        getAll: tGetAll,
         users: tUsers,
-        all: tView + tCall + tTg + tGetAll + tUsers,
+        all: tView + tCall + tTg + tUsers,
       },
       sources: {
+        view: { source: 'RequestLog', path: '/v1/post/all', method: 'GET' },
+        call: { source: 'ButtonClick', type: 'call' },
+        tg: { source: 'ButtonClick', type: 'tg' },
         users: {
+          source: 'external API',
           ok: users.ok,
-          note: users.ok ? undefined : 'USERS_STATS_API_URL yo\'q yoki tashqi API mavjud emas',
+          note: users.ok ? undefined : "USERS_STATS_API_URL yo'q yoki tashqi API mavjud emas",
         },
       },
       points,
