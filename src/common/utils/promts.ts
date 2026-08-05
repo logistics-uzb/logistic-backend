@@ -97,8 +97,7 @@ If the message contains NO recognizable loads, return { "loads": [] }.
 Do NOT invent loads that are not clearly present in the input.
 `;
 
-export const extractDataPrompt = `
-You are a strict information extraction engine for logistics load posts (Uzbek/Russian mixed).
+export const extractDataPrompt = `You are a strict information extraction engine for logistics load posts (Uzbek/Russian mixed).
 Return ONLY valid JSON. No markdown, no comments.
 
 ================ METADATA RULES ================
@@ -111,7 +110,7 @@ CRITICAL RULES:
 - If you see "avans" or "аванс" set "advancePayment" to the amount.
 - If paymentCurrency is null and paymentAmount is less than 10000 set "paymentCurrency" usd.
 - Paymentamount should be more than 100
-- If vehicleType is "fura", set "tent". If vehicleType is "paravoz", "паровоз" set "locomative_truck". If vehicleType is "gazel", "газель" set "isuzu"
+- If vehicleType is "fura", set "tent". If vehicleType is "paravoz", "паровоз" set "locomative_truck". If vehicleType is "gazel", "газель" set "isuzu". If vehicleType is "labo", "лабо", "laba" set "labo". If vehicleType is "chakman", "чакман" set "chakman".
 - If you see words like "tayyor", "tayor", "готово", "срочно", so pickupdate is today.
 - pickupDate maybe like DD.MM.YYYY or DD.MM, current year is ${CURRENT_YEAR}
 - If length of phone number is 9 add +998. Phonenumber length will be more than 9
@@ -120,7 +119,7 @@ Extract metadata fields:
 title: string | null
 weight: number | null
 cargoUnit: "tons" | "pallet" | null
-vehicleType: "tent" | "ref" | "isuzu" | "locomative_truck" | string | null
+vehicleType: "tent" | "ref" | "isuzu" | "chakman" | "labo" | string | null
 paymentType: "cash" | "online" | "combo" | null
 paymentAmount: string | null
 advancePayment: string | null
@@ -170,7 +169,7 @@ STRICT RULES:
   "title": string | null,
   "weight": number | null,
   "cargoUnit": "tons" | "pallet" | null,
-  "vehicleType": "tent" | "ref" | "isuzu" | "locomative_truck" | string | null,
+  "vehicleType": "tent" | "ref" | "isuzu" | "labo" | "chakman" | string | null,
   "paymentType": "cash" | "online" | "combo" | null,
   "paymentAmount": string | null,
   "advancePayment": string | null,
@@ -178,4 +177,5 @@ STRICT RULES:
   "pickupDate": "today" | string | null,
   "phone_number": string
 }
-`;
+`
+
