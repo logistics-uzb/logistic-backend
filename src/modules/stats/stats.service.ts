@@ -214,14 +214,11 @@ export class StatsService {
     }
     const whereSql = Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}`;
 
-    // `AT TIME ZONE 'Asia/Tashkent'` — session TZ ga bog'liq bo'lmagan holda
-    // Toshkent bucket boshini UTC timestamp sifatida qaytaradi.
-    const rows: Array<{ bucket: Date; count: bigint }> =
+    // SQL soatlik beradi; Node tarafda so'ralgan bucketga yig'amiz (Toshkent).
+    const rowsHourly: Array<{ bucket: Date; count: bigint }> =
       await this.prisma.$queryRaw(
         Prisma.sql`
-          SELECT
-            (date_trunc(${unit}, "createdAt" AT TIME ZONE 'Asia/Tashkent') AT TIME ZONE 'Asia/Tashkent') AS bucket,
-            COUNT(*)::bigint AS count
+          SELECT date_trunc('hour', "createdAt") AS bucket, COUNT(*)::bigint AS count
           FROM "RequestLog"
           ${whereSql}
           GROUP BY bucket
@@ -229,10 +226,11 @@ export class StatsService {
         `
       );
 
-    // Xaritaga solamiz — tez qidiruv uchun
+    // Soatlarni so'ralgan bucketga yig'ish (Toshkent floor bo'yicha)
     const countMap = new Map<number, number>();
-    for (const r of rows) {
-      countMap.set(r.bucket.getTime(), Number(r.count));
+    for (const r of rowsHourly) {
+      const key = this.floorTo(r.bucket, bucket).getTime();
+      countMap.set(key, (countMap.get(key) ?? 0) + Number(r.count));
     }
 
     // Barcha bucketlarni generatsiya qilib bo'sh bo'lganlarga 0 qo'yamiz.
@@ -353,13 +351,11 @@ export class StatsService {
     if (dto.loadId) conditions.push(Prisma.sql`"loadId" = ${dto.loadId}`);
     const whereSql = Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}`;
 
+    // SQL soatlik beradi; Node tarafda so'ralgan bucketga yig'amiz (Toshkent).
     const rows: Array<{ bucket: Date; type: string; count: bigint }> =
       await this.prisma.$queryRaw(
         Prisma.sql`
-          SELECT
-            (date_trunc(${unit}, "createdAt" AT TIME ZONE 'Asia/Tashkent') AT TIME ZONE 'Asia/Tashkent') AS bucket,
-            "type",
-            COUNT(*)::bigint AS count
+          SELECT date_trunc('hour', "createdAt") AS bucket, "type", COUNT(*)::bigint AS count
           FROM "ButtonClick"
           ${whereSql}
           GROUP BY bucket, "type"
@@ -367,13 +363,14 @@ export class StatsService {
         `
       );
 
-    // Xarita: bucketMs → { tg, call }
+    // Xarita: bucketMs (Toshkent kun/soat) → { tg, call }
     const perBucket = new Map<number, { tg: number; call: number }>();
     for (const r of rows) {
-      const key = r.bucket.getTime();
+      const key = this.floorTo(r.bucket, bucket).getTime();
       const cur = perBucket.get(key) ?? { tg: 0, call: 0 };
-      if (r.type === 'tg') cur.tg = Number(r.count);
-      else if (r.type === 'call') cur.call = Number(r.count);
+      const n = Number(r.count);
+      if (r.type === 'tg') cur.tg += n;
+      else if (r.type === 'call') cur.call += n;
       perBucket.set(key, cur);
     }
 
@@ -454,16 +451,14 @@ export class StatsService {
     const unit = truncUnit[bucket];
 
     // ── Parallel: 3 ta manba ──
-    // NB: `AT TIME ZONE 'Asia/Tashkent'` — session TZ ga bog'liq bo'lmagan holda
-    // Toshkent bucketiga aniq yaxlitlash. Sessiya UTC yoki Tashkent bo'lsa ham
-    // natija bir xil: Toshkent kun/soat boshi UTC timestamp sifatida.
-    const [buttonRows, requestRows, users] = await Promise.all([
+    // SQL doim SOATLIK bucket beradi (session TZ ga bog'liq emas — UTC+5 butun
+    // soat farq bo'lgani uchun soat chegaralari UTC va Toshkent'da bir xil).
+    // Node tarafida esa soatlarni so'ralgan bucketga (day/month) yig'amiz —
+    // bu Toshkent kun boshi (00:00 mahalliy) bo'yicha to'g'ri guruhlaydi.
+    const [buttonRowsHourly, requestRowsHourly, users] = await Promise.all([
       this.prisma.$queryRaw<Array<{ bucket: Date; type: string; count: bigint }>>(
         Prisma.sql`
-          SELECT
-            (date_trunc(${unit}, "createdAt" AT TIME ZONE 'Asia/Tashkent') AT TIME ZONE 'Asia/Tashkent') AS bucket,
-            "type",
-            COUNT(*)::bigint AS count
+          SELECT date_trunc('hour', "createdAt") AS bucket, "type", COUNT(*)::bigint AS count
           FROM "ButtonClick"
           WHERE "createdAt" >= ${fromDate} AND "createdAt" < ${rangeEnd}
             AND "type" IN ('tg', 'call')
@@ -473,9 +468,7 @@ export class StatsService {
       ),
       this.prisma.$queryRaw<Array<{ bucket: Date; count: bigint }>>(
         Prisma.sql`
-          SELECT
-            (date_trunc(${unit}, "createdAt" AT TIME ZONE 'Asia/Tashkent') AT TIME ZONE 'Asia/Tashkent') AS bucket,
-            COUNT(*)::bigint AS count
+          SELECT date_trunc('hour', "createdAt") AS bucket, COUNT(*)::bigint AS count
           FROM "RequestLog"
           WHERE "createdAt" >= ${fromDate}
             AND "createdAt" < ${rangeEnd}
@@ -488,20 +481,22 @@ export class StatsService {
       this.fetchUsersStats(fromDate.getTime(), rangeEnd.getTime(), bucket),
     ]);
 
-    // ── Xaritalarga solamiz ──
-    // btnMap — tg va call clicks (button-clicks endpoint bilan mos)
+    // ── Xaritalarga solamiz — Node tarafida hourly → requested bucket ga yig'iladi ──
+    // Har hourly satr uchun uning Toshkent kun/soat/oy boshini `floorTo` bilan
+    // hisoblaymiz va shu bucketga qo'shamiz.
     const btnMap = new Map<number, { call: number; tg: number }>();
-    for (const r of buttonRows) {
-      const key = r.bucket.getTime();
-      const cur = btnMap.get(key) ?? { call: 0, tg: 0 };
-      if (r.type === 'call') cur.call = Number(r.count);
-      else if (r.type === 'tg') cur.tg = Number(r.count);
-      btnMap.set(key, cur);
+    for (const r of buttonRowsHourly) {
+      const bucketKey = this.floorTo(r.bucket, bucket).getTime();
+      const cur = btnMap.get(bucketKey) ?? { call: 0, tg: 0 };
+      const n = Number(r.count);
+      if (r.type === 'call') cur.call += n;
+      else if (r.type === 'tg') cur.tg += n;
+      btnMap.set(bucketKey, cur);
     }
-    // viewMap — /v1/post/all chaqiruvlari (by-path endpoint bilan mos)
     const viewMap = new Map<number, number>();
-    for (const r of requestRows) {
-      viewMap.set(r.bucket.getTime(), Number(r.count));
+    for (const r of requestRowsHourly) {
+      const bucketKey = this.floorTo(r.bucket, bucket).getTime();
+      viewMap.set(bucketKey, (viewMap.get(bucketKey) ?? 0) + Number(r.count));
     }
 
     // ── Barcha bucketlarni to'ldiramiz (bo'shlariga 0) ──
