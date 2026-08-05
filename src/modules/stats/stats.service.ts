@@ -214,12 +214,14 @@ export class StatsService {
     }
     const whereSql = Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}`;
 
-    // DB sessiya timezone'i Asia/Tashkent (`ALTER DATABASE ... SET TIMEZONE`)
-    // bo'lgani uchun `date_trunc` avtomatik Toshkent bucket boshini qaytaradi.
+    // `AT TIME ZONE 'Asia/Tashkent'` — session TZ ga bog'liq bo'lmagan holda
+    // Toshkent bucket boshini UTC timestamp sifatida qaytaradi.
     const rows: Array<{ bucket: Date; count: bigint }> =
       await this.prisma.$queryRaw(
         Prisma.sql`
-          SELECT date_trunc(${unit}, "createdAt") AS bucket, COUNT(*)::bigint AS count
+          SELECT
+            (date_trunc(${unit}, "createdAt" AT TIME ZONE 'Asia/Tashkent') AT TIME ZONE 'Asia/Tashkent') AS bucket,
+            COUNT(*)::bigint AS count
           FROM "RequestLog"
           ${whereSql}
           GROUP BY bucket
@@ -354,7 +356,10 @@ export class StatsService {
     const rows: Array<{ bucket: Date; type: string; count: bigint }> =
       await this.prisma.$queryRaw(
         Prisma.sql`
-          SELECT date_trunc(${unit}, "createdAt") AS bucket, "type", COUNT(*)::bigint AS count
+          SELECT
+            (date_trunc(${unit}, "createdAt" AT TIME ZONE 'Asia/Tashkent') AT TIME ZONE 'Asia/Tashkent') AS bucket,
+            "type",
+            COUNT(*)::bigint AS count
           FROM "ButtonClick"
           ${whereSql}
           GROUP BY bucket, "type"
@@ -449,13 +454,16 @@ export class StatsService {
     const unit = truncUnit[bucket];
 
     // ── Parallel: 3 ta manba ──
-    //   1) ButtonClick — call/tg (bizning DB, /v1/post/button-clicks ma'lumoti)
-    //   2) RequestLog  — /v1/post/all (bizning DB) → `view` sifatida
-    //   3) Users API   — tashqi bot backend (.env orqali)
+    // NB: `AT TIME ZONE 'Asia/Tashkent'` — session TZ ga bog'liq bo'lmagan holda
+    // Toshkent bucketiga aniq yaxlitlash. Sessiya UTC yoki Tashkent bo'lsa ham
+    // natija bir xil: Toshkent kun/soat boshi UTC timestamp sifatida.
     const [buttonRows, requestRows, users] = await Promise.all([
       this.prisma.$queryRaw<Array<{ bucket: Date; type: string; count: bigint }>>(
         Prisma.sql`
-          SELECT date_trunc(${unit}, "createdAt") AS bucket, "type", COUNT(*)::bigint AS count
+          SELECT
+            (date_trunc(${unit}, "createdAt" AT TIME ZONE 'Asia/Tashkent') AT TIME ZONE 'Asia/Tashkent') AS bucket,
+            "type",
+            COUNT(*)::bigint AS count
           FROM "ButtonClick"
           WHERE "createdAt" >= ${fromDate} AND "createdAt" < ${rangeEnd}
             AND "type" IN ('tg', 'call')
@@ -465,7 +473,9 @@ export class StatsService {
       ),
       this.prisma.$queryRaw<Array<{ bucket: Date; count: bigint }>>(
         Prisma.sql`
-          SELECT date_trunc(${unit}, "createdAt") AS bucket, COUNT(*)::bigint AS count
+          SELECT
+            (date_trunc(${unit}, "createdAt" AT TIME ZONE 'Asia/Tashkent') AT TIME ZONE 'Asia/Tashkent') AS bucket,
+            COUNT(*)::bigint AS count
           FROM "RequestLog"
           WHERE "createdAt" >= ${fromDate}
             AND "createdAt" < ${rangeEnd}
