@@ -110,7 +110,7 @@ CRITICAL RULES:
 - If you see "avans" or "аванс" set "advancePayment" to the amount.
 - If paymentCurrency is null and paymentAmount is less than 10000 set "paymentCurrency" usd.
 - Paymentamount should be more than 100
-- If vehicleType is "fura", set "tent". If vehicleType is "paravoz", "паровоз" set "locomative_truck". If vehicleType is "gazel", "газель" set "isuzu". If vehicleType is "labo", "лабо", "laba" set "labo". If vehicleType is "chakman", "чакман" set "chakman".
+- If vehicleType is "fura" or weight greater than 20 tons set "tent". If vehicleType is "paravoz", "паровоз" set "locomative_truck". If vehicleType is "gazel", "газель" set "isuzu". If vehicleType is "labo", "лабо", "laba" set "labo". If vehicleType is "chakman", "чакман" set "chakman".
 - If you see words like "tayyor", "tayor", "готово", "срочно", so pickupdate is today.
 - pickupDate maybe like DD.MM.YYYY or DD.MM, current year is ${CURRENT_YEAR}
 - If length of phone number is 9 add +998. Phonenumber length will be more than 9
@@ -178,4 +178,5 @@ STRICT RULES:
   "phone_number": string
 }
 `
+
 
