@@ -3,8 +3,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    container_name: logistic-backend
     ports:
-      - "4001:4001"
+      - "5000:5000"
     env_file:
       - .env
     restart: unless-stopped
+    # Prisma migrate deploy container ishga tushishida — DB'da yangi migration
+    # bo'lsa avtomatik qo'llaniladi. Keyin main.js ishga tushadi.
+    command: sh -c "npx prisma migrate deploy && node dist/main.js"
