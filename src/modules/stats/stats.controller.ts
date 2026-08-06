@@ -80,4 +80,14 @@ export class StatsController {
   async users(@Query() dto: GetAllInOneDto) {
     return this.statsService.getUsersStats(dto);
   }
+
+  @Get('sessions')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      "PostHog session statistikasi (session replay: davomiylik, unikal userlar). POST_HOG_API_URL/POST_HOG_PROJECT_ID/POST_HOG_API env'lar kerak.",
+  })
+  async sessions(@Query() dto: GetAllInOneDto) {
+    return this.statsService.getSessionsStats(dto);
+  }
 }

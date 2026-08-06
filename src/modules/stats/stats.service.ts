@@ -80,6 +80,97 @@ export class StatsService {
   }
 
   /**
+   * PostHog HogQL Query API orqali session statistikasi.
+   * `POST_HOG_API_URL`, `POST_HOG_PROJECT_ID`, `POST_HOG_API_KEY` env sozlanishi shart.
+   * Aks holda bo'sh natija (ok=false) qaytariladi.
+   *
+   * Qaytaradi: bucket → { sessions, activeMinutes, uniqueUsers, avgMinutes }
+   */
+  async fetchPostHogSessions(
+    fromMs: number,
+    toMs: number,
+    bucket: 'hour' | 'day' | 'month'
+  ): Promise<{
+    perBucket: Map<
+      number,
+      { sessions: number; activeMinutes: number; uniqueUsers: number }
+    >;
+    ok: boolean;
+  }> {
+    const apiUrl = this.configService.get<string>('POST_HOG_API_URL');
+    const projectId = this.configService.get<string>('POST_HOG_PROJECT_ID');
+    const apiKey = this.configService.get<string>('POST_HOG_API_KEY');
+    if (!apiUrl || !projectId || !apiKey) {
+      return { perBucket: new Map(), ok: false };
+    }
+
+    // HogQL: soatlik bucket, Toshkent vaqti bilan. Node keyin so'ralgan bucketga
+    // (day/month) yig'adi — bir xil `floorTo` mantiqi bilan.
+    const fromIso = new Date(fromMs).toISOString();
+    const toIso = new Date(toMs).toISOString();
+    const hogql = `
+      SELECT
+        toStartOfHour(min_first_timestamp) AS hour,
+        count() AS sessions,
+        sum(active_milliseconds) / 1000 / 60 AS active_minutes,
+        countDistinct(distinct_id) AS unique_users
+      FROM raw_session_replay_events
+      WHERE min_first_timestamp >= toDateTime('${fromIso}')
+        AND min_first_timestamp <  toDateTime('${toIso}')
+      GROUP BY hour
+      ORDER BY hour ASC
+    `.trim();
+
+    const url = `${apiUrl.replace(/\/$/, '')}/api/projects/${projectId}/query/`;
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ query: { kind: 'HogQLQuery', query: hogql } }),
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!res.ok) {
+        this.logger.warn(`PostHog API ${res.status} — ${await res.text().catch(() => '')}`);
+        return { perBucket: new Map(), ok: false };
+      }
+      const json: any = await res.json();
+      // HogQL javobi: { results: [[hour, sessions, active_minutes, unique_users], ...] }
+      const rows: any[] = json?.results ?? [];
+
+      const perBucket = new Map<
+        number,
+        { sessions: number; activeMinutes: number; uniqueUsers: number }
+      >();
+      for (const row of rows) {
+        const [hourStr, sessions, activeMinutes, uniqueUsers] = row;
+        // hourStr — ISO/UTC string ("2026-08-05T14:00:00Z")
+        const hourDate = new Date(hourStr);
+        if (isNaN(hourDate.getTime())) continue;
+        // Toshkent bucketga yig'ish
+        const key = this.floorTo(hourDate, bucket).getTime();
+        const cur =
+          perBucket.get(key) ?? { sessions: 0, activeMinutes: 0, uniqueUsers: 0 };
+        cur.sessions += Number(sessions ?? 0);
+        cur.activeMinutes += Number(activeMinutes ?? 0);
+        // NB: uniqueUsers hourly-dan yig'ilsa "double-count" bo'lishi mumkin
+        // (bir user 2 soatda ham bo'lgan bo'lsa). Aniq unique kerak bo'lsa
+        // day/month bucket uchun alohida query kerak — hozircha yig'indi.
+        cur.uniqueUsers += Number(uniqueUsers ?? 0);
+        perBucket.set(key, cur);
+      }
+      return { perBucket, ok: true };
+    } catch (err: any) {
+      this.logger.error(
+        `PostHog API chaqiruv xatosi: ${err?.message ?? err}`
+      );
+      return { perBucket: new Map(), ok: false };
+    }
+  }
+
+  /**
    * "2026-08-01" yoki "2026-08-05T14:00" ni Toshkent bucket boshiga aylantiradi.
    * Natija — UTC Date (bu bucket boshiga to'g'ri keladigan UTC moment).
    */
@@ -450,12 +541,11 @@ export class StatsService {
     };
     const unit = truncUnit[bucket];
 
-    // ── Parallel: 3 ta manba ──
+    // ── Parallel: 4 ta manba ──
     // SQL doim SOATLIK bucket beradi (session TZ ga bog'liq emas — UTC+5 butun
     // soat farq bo'lgani uchun soat chegaralari UTC va Toshkent'da bir xil).
-    // Node tarafida esa soatlarni so'ralgan bucketga (day/month) yig'amiz —
-    // bu Toshkent kun boshi (00:00 mahalliy) bo'yicha to'g'ri guruhlaydi.
-    const [buttonRowsHourly, requestRowsHourly, users] = await Promise.all([
+    // Node tarafida esa soatlarni so'ralgan bucketga (day/month) yig'amiz.
+    const [buttonRowsHourly, requestRowsHourly, users, posthog] = await Promise.all([
       this.prisma.$queryRaw<Array<{ bucket: Date; type: string; count: bigint }>>(
         Prisma.sql`
           SELECT date_trunc('hour', "createdAt") AS bucket, "type", COUNT(*)::bigint AS count
@@ -479,6 +569,7 @@ export class StatsService {
         `
       ),
       this.fetchUsersStats(fromDate.getTime(), rangeEnd.getTime(), bucket),
+      this.fetchPostHogSessions(fromDate.getTime(), rangeEnd.getTime(), bucket),
     ]);
 
     // ── Xaritalarga solamiz — Node tarafida hourly → requested bucket ga yig'iladi ──
@@ -506,19 +597,37 @@ export class StatsService {
       call: number;
       tg: number;
       users: number;
+      sessions: number;
+      activeMinutes: number;
+      uniqueUsers: number;
+      avgMinutes: number;
       total: number;
     }> = [];
     let tView = 0;
     let tCall = 0;
     let tTg = 0;
     let tUsers = 0;
+    let tSessions = 0;
+    let tActiveMinutes = 0;
+    let tUniqueUsers = 0;
 
     for (let d = fromDate; d <= toDate; d = this.addOne(d, bucket)) {
       const key = d.getTime();
       const b = btnMap.get(key) ?? { call: 0, tg: 0 };
       const view = viewMap.get(key) ?? 0;
       const usersCount = users.perBucket.get(key) ?? 0;
-      const total = view + b.call + b.tg + usersCount;
+      const ph = posthog.perBucket.get(key) ?? {
+        sessions: 0,
+        activeMinutes: 0,
+        uniqueUsers: 0,
+      };
+      const activeMinutes = Math.round(ph.activeMinutes * 10) / 10;
+      // avgMinutes = activeMinutes / sessions (agar sessiya bo'lsa)
+      const avgMinutes =
+        ph.sessions > 0
+          ? Math.round((ph.activeMinutes / ph.sessions) * 10) / 10
+          : 0;
+      const total = view + b.call + b.tg + usersCount + ph.sessions;
 
       points.push({
         date: this.formatLocalIso(d),
@@ -526,6 +635,10 @@ export class StatsService {
         call: b.call,
         tg: b.tg,
         users: usersCount,
+        sessions: ph.sessions,
+        activeMinutes,
+        uniqueUsers: ph.uniqueUsers,
+        avgMinutes,
         total,
       });
 
@@ -533,7 +646,14 @@ export class StatsService {
       tCall += b.call;
       tTg += b.tg;
       tUsers += usersCount;
+      tSessions += ph.sessions;
+      tActiveMinutes += ph.activeMinutes;
+      tUniqueUsers += ph.uniqueUsers;
     }
+
+    // Umumiy avgMinutes = jami activeMinutes / jami sessions
+    const totalAvgMinutes =
+      tSessions > 0 ? Math.round((tActiveMinutes / tSessions) * 10) / 10 : 0;
 
     return {
       bucket,
@@ -545,7 +665,11 @@ export class StatsService {
         call: tCall,
         tg: tTg,
         users: tUsers,
-        all: tView + tCall + tTg + tUsers,
+        sessions: tSessions,
+        activeMinutes: Math.round(tActiveMinutes * 10) / 10,
+        uniqueUsers: tUniqueUsers,
+        avgMinutes: totalAvgMinutes,
+        all: tView + tCall + tTg + tUsers + tSessions,
       },
       sources: {
         view: { source: 'RequestLog', path: '/v1/post/all', method: 'GET' },
@@ -554,10 +678,92 @@ export class StatsService {
         users: {
           source: 'external API',
           ok: users.ok,
-          note: users.ok ? undefined : "USERS_STATS_API_URL yo'q yoki tashqi API mavjud emas",
+          note: users.ok ? undefined : "USERS_STATS_API_URL yo'q",
+        },
+        sessions: {
+          source: 'PostHog HogQL',
+          ok: posthog.ok,
+          note: posthog.ok
+            ? undefined
+            : "POST_HOG_API_URL/POST_HOG_PROJECT_ID/POST_HOG_API_KEY env'lar yo'q",
         },
       },
       points,
+    };
+  }
+
+  /**
+   * Faqat PostHog session statistikasi (proxy).
+   */
+  async getSessionsStats(dto: {
+    from?: number;
+    to?: number;
+    bucket?: 'hour' | 'day' | 'month';
+  }) {
+    const bucket = dto.bucket ?? 'hour';
+    const now = Date.now();
+
+    let fromMs = dto.from;
+    const toMs = dto.to ?? now;
+    if (fromMs == null) {
+      const HOUR = 60 * 60 * 1000;
+      const DAY = 24 * HOUR;
+      if (bucket === 'hour') fromMs = now - 24 * HOUR;
+      else if (bucket === 'day') fromMs = now - 30 * DAY;
+      else fromMs = now - 365 * DAY;
+    }
+
+    const fromDate = this.floorTo(new Date(fromMs), bucket);
+    const toDate = this.floorTo(new Date(toMs), bucket);
+    const rangeEnd = this.addOne(toDate, bucket);
+
+    const posthog = await this.fetchPostHogSessions(
+      fromDate.getTime(),
+      rangeEnd.getTime(),
+      bucket
+    );
+
+    const data: Array<{
+      date: string;
+      sessions: number;
+      activeMinutes: number;
+      uniqueUsers: number;
+      avgMinutes: number;
+    }> = [];
+    let tSessions = 0;
+    let tActiveMinutes = 0;
+
+    for (let d = fromDate; d <= toDate; d = this.addOne(d, bucket)) {
+      const ph = posthog.perBucket.get(d.getTime()) ?? {
+        sessions: 0,
+        activeMinutes: 0,
+        uniqueUsers: 0,
+      };
+      const avgMinutes =
+        ph.sessions > 0 ? Math.round((ph.activeMinutes / ph.sessions) * 10) / 10 : 0;
+
+      data.push({
+        date: this.formatLocalIso(d),
+        sessions: ph.sessions,
+        activeMinutes: Math.round(ph.activeMinutes * 10) / 10,
+        uniqueUsers: ph.uniqueUsers,
+        avgMinutes,
+      });
+      tSessions += ph.sessions;
+      tActiveMinutes += ph.activeMinutes;
+    }
+
+    return {
+      bucket,
+      timezone: 'Asia/Tashkent',
+      from: this.formatLocalIso(fromDate),
+      to: this.formatLocalIso(toDate),
+      totals: {
+        sessions: tSessions,
+        activeMinutes: Math.round(tActiveMinutes * 10) / 10,
+      },
+      sourceOk: posthog.ok,
+      data,
     };
   }
 
