@@ -1307,135 +1307,148 @@ ${text}
       );
     }
 
-    // ----------------------------------------------------------------------
-    // MTProto worker'ga jo'natish HOZIRCHA O'CHIRILGAN.
-    // Dispatcher yuborgan xabar faqat DB'ga saqlanadi va qidiruvda chiqadi.
-    // Kelajakda qayta yoqish kerak bo'lsa quyidagi bloklarni kommentdan chiqaring:
-    //   1) TelegramGroup + BlockedGroup fetch (aktiv guruhlar ro'yxati)
-    //   2) axios.post → Python /enqueue chaqiruvi
-    //   3) sendStatus'ni QUEUED ga yangilash + xato callback
-    // ----------------------------------------------------------------------
-    // // 2) Aktiv guruhlarni olish, bloklanganlarni chiqarib tashlash
-    // const now = new Date();
-    // const [activeGroups, blocked] = await Promise.all([
-    //   this.prisma.telegramGroup.findMany({
-    //     where: { isActive: true },
-    //     select: { username: true },
-    //   }),
-    //   this.prisma.blockedGroup.findMany({
-    //     where: { unblockAt: { gt: now } },
-    //     select: { username: true },
-    //   }),
-    // ]);
-    // const blockedSet = new Set(blocked.map((b) => b.username));
-    // const groupUsernames = activeGroups
-    //   .map((g) => g.username)
-    //   .filter((u) => u && !blockedSet.has(u));
-    //
-    // if (groupUsernames.length === 0) {
-    //   throw new BadRequestException(
-    //     'No active telegram groups available (all blocked or none configured)',
-    //   );
-    // }
-
-    // 3) Xabar matnini quramiz (DB'ga saqlash uchun kerak)
+    // 2) Xabar matnini quramiz (DB'ga saqlash uchun kerak, allowlist'siz ham)
     const message = body.isMessage
       ? body.message
       : this.buildTelegramMessage(body, dispatcher.phone);
 
-    // 4) Bazaga saqlaymiz — asosiy vazifa
+    // 3) Bazaga saqlaymiz — asosiy vazifa (hamma dispatcher uchun)
     const saved = await this.persistDispatcherPost(
       body,
       message,
       dispatcherId,
       dispatcher.phone,
     );
-    this.logger.log(
-      `Dispatcher post saved id=${saved.id} createdById=${dispatcherId} (MTProto o'chirilgan)`
-    );
 
-    // ----------------------------------------------------------------------
-    // 5) Python MTProto servisga navbatga qo'yish — O'CHIRILGAN.
-    // ----------------------------------------------------------------------
-    // const mtprotoUrl = this.configService.get<string>('MTPROTO_SERVICE_URL');
-    // const sharedSecret = this.configService.get<string>('MTPROTO_SHARED_SECRET');
-    // const publicBaseUrl = this.configService.get<string>('PUBLIC_BASE_URL');
-    //
-    // if (!mtprotoUrl || !sharedSecret) {
-    //   this.logger.warn(
-    //     `MTPROTO_SERVICE_URL yoki MTPROTO_SHARED_SECRET .env da yo'q — post ${saved.id} DB'ga saqlandi, lekin navbatga qo'yilmadi (sendStatus=PENDING)`
-    //   );
-    //   return {
-    //     success: true,
-    //     savedId: saved.id,
-    //     sendStatus: 'PENDING',
-    //     groupsCount: groupUsernames.length,
-    //     note: 'MTProto service not configured — persisted only',
-    //   };
-    // }
-    //
-    // const callbackUrl = `${(publicBaseUrl ?? '').replace(/\/$/, '')}/v1/internal/send-result`;
-    //
-    // try {
-    //   await axios.post(
-    //     `${mtprotoUrl.replace(/\/$/, '')}/enqueue`,
-    //     {
-    //       id: saved.id,
-    //       message,
-    //       groups: groupUsernames,
-    //       callbackUrl,
-    //     },
-    //     {
-    //       headers: { 'X-Internal-Secret': sharedSecret },
-    //       timeout: 10_000,
-    //     }
-    //   );
-    //
-    //   await this.prisma.logisticMessage.update({
-    //     where: { id: saved.id },
-    //     data: {
-    //       sendStatus: 'QUEUED',
-    //       queuedAt: new Date(),
-    //     },
-    //   });
-    //
-    //   this.logger.log(
-    //     `Post ${saved.id} navbatga qo'shildi (${groupUsernames.length} ta guruh)`
-    //   );
-    //
-    //   return {
-    //     success: true,
-    //     savedId: saved.id,
-    //     sendStatus: 'QUEUED',
-    //     groupsCount: groupUsernames.length,
-    //   };
-    // } catch (error) {
-    //   this.logger.error(
-    //     `Python /enqueue chaqiruv xatosi (post ${saved.id}): ${error?.message}`
-    //   );
-    //   await this.prisma.logisticMessage.update({
-    //     where: { id: saved.id },
-    //     data: {
-    //       sendStatus: 'FAILED',
-    //       sendResults: {
-    //         error: 'mtproto_service_unavailable',
-    //         detail: error?.message ?? 'unknown',
-    //       },
-    //     },
-    //   });
-    //   throw new BadRequestException(
-    //     'MTProto service unavailable — post saved but not queued'
-    //   );
-    // }
+    // 4) Allowlist — hozircha faqat bitta raqam MTProto orqali haqiqiy jo'natishga
+    // ega. Qolgan dispatcher'lar uchun post DB'ga saqlanadi (PENDING) lekin
+    // hech qanday guruhga xabar ketmaydi. Testlash tugagach allowlist kengaytiriladi.
+    const ALLOWED_DISPATCHER_PHONES = new Set(['+998993002399']);
+    const normalizedPhone = (dispatcher.phone ?? '').replace(/\s+/g, '');
+    if (!ALLOWED_DISPATCHER_PHONES.has(normalizedPhone)) {
+      this.logger.log(
+        `Dispatcher phone=${normalizedPhone} allowlist'da yo'q — MTProto skip (post ${saved.id} PENDING)`,
+      );
+      return {
+        success: true,
+        savedId: saved.id,
+        sendStatus: 'PENDING',
+        note: "Dispatcher allowlist'da yo'q — post DB'ga saqlandi, jo'natilmadi",
+      };
+    }
 
-    // MTProto o'chirilgani sababli — post PENDING'da qoladi (default).
-    // Qidiruvda `GET /v1/post/all`, `/formatted`, `/my` orqali topilaveradi.
-    return {
-      success: true,
-      savedId: saved.id,
-      sendStatus: 'PENDING',
-      note: "MTProto worker o'chirilgan — post DB'ga saqlandi va qidiruvda mavjud",
-    };
+    // 5) Aktiv guruhlarni olish (username YOKI chatId) — bloklanganlarni chiqarib tashlaymiz
+    const now = new Date();
+    const [activeGroups, blocked] = await Promise.all([
+      this.prisma.telegramGroup.findMany({
+        where: { isActive: true },
+        select: { username: true, chatId: true },
+      }),
+      this.prisma.blockedGroup.findMany({
+        where: { unblockAt: { gt: now } },
+        select: { username: true },
+      }),
+    ]);
+
+    // BlockedGroup hozircha faqat `username` bo'yicha filter qiladi.
+    // Yopiq (chatId-only) guruhlar bloklansa keyingi bosqichda BlockedGroup
+    // schema'siga `chatId` qo'shish kerak — hozircha ular filterlanmaydi.
+    const blockedSet = new Set(blocked.map((b) => b.username));
+
+    // MTPro `send_to_group` uch xil formatni qabul qiladi: `@name`, `name`, `-100...`
+    // Bu yerda username bor bo'lsa uni yuboramiz; aks holda chatId (string) yuboramiz.
+    const groupTargets: string[] = activeGroups
+      .map((g) => {
+        if (g.username) {
+          if (blockedSet.has(g.username)) return null;
+          return g.username;
+        }
+        if (g.chatId != null) {
+          return g.chatId.toString();
+        }
+        return null;
+      })
+      .filter((x): x is string => !!x);
+
+    if (groupTargets.length === 0) {
+      throw new BadRequestException(
+        'No active telegram groups available (all blocked or none configured)',
+      );
+    }
+
+    // 6) Python MTProto servisga navbatga qo'yish
+    const mtprotoUrl =
+      this.configService.get<string>('MTPROTO_SERVICE_URL') ||
+      this.configService.get<string>('PYTHON_TELETHON_API_URL');
+    const sharedSecret = this.configService.get<string>('MTPROTO_SHARED_SECRET');
+    const publicBaseUrl = this.configService.get<string>('PUBLIC_BASE_URL');
+
+    if (!mtprotoUrl || !sharedSecret) {
+      this.logger.warn(
+        `MTPROTO_SERVICE_URL yoki MTPROTO_SHARED_SECRET .env da yo'q — post ${saved.id} DB'ga saqlandi, lekin navbatga qo'yilmadi (sendStatus=PENDING)`,
+      );
+      return {
+        success: true,
+        savedId: saved.id,
+        sendStatus: 'PENDING',
+        groupsCount: groupTargets.length,
+        note: 'MTProto service not configured — persisted only',
+      };
+    }
+
+    const callbackUrl = `${(publicBaseUrl ?? '').replace(/\/$/, '')}/v1/internal/send-result`;
+
+    try {
+      await axios.post(
+        `${mtprotoUrl.replace(/\/$/, '')}/enqueue`,
+        {
+          id: saved.id,
+          message,
+          groups: groupTargets,
+          callback_url: callbackUrl,
+        },
+        {
+          headers: { 'X-Internal-Secret': sharedSecret },
+          timeout: 10_000,
+        },
+      );
+
+      await this.prisma.logisticMessage.update({
+        where: { id: saved.id },
+        data: {
+          sendStatus: 'QUEUED',
+          queuedAt: new Date(),
+        },
+      });
+
+      this.logger.log(
+        `Post ${saved.id} navbatga qo'shildi (${groupTargets.length} ta guruh, dispatcher=${normalizedPhone})`,
+      );
+
+      return {
+        success: true,
+        savedId: saved.id,
+        sendStatus: 'QUEUED',
+        groupsCount: groupTargets.length,
+      };
+    } catch (error: any) {
+      this.logger.error(
+        `Python /enqueue chaqiruv xatosi (post ${saved.id}): ${error?.message}`,
+      );
+      await this.prisma.logisticMessage.update({
+        where: { id: saved.id },
+        data: {
+          sendStatus: 'FAILED',
+          sendResults: {
+            error: 'mtproto_service_unavailable',
+            detail: error?.message ?? 'unknown',
+          },
+        },
+      });
+      throw new BadRequestException(
+        'MTProto service unavailable — post saved but not queued',
+      );
+    }
   }
 
   /**
