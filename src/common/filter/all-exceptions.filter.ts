@@ -6,6 +6,7 @@ import {
   HttpStatus,
   Logger,
   BadRequestException,
+  NotFoundException,
 } from '@nestjs/common';
 import { Response } from 'express';
 import { MongoError } from 'mongodb';
@@ -19,7 +20,12 @@ export class AllExceptionFilter implements ExceptionFilter {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();
 
-    this.logger.debug('Exception error:', exception);
+    // 404 xatolarni jimlashtiramiz — botlar sekundiga o'nlab so'raydi
+    // (`/wp-config.php~`, `/.ssh/id_rsa`, `/phpinfo.php` va h.k.). Log toza qoladi.
+    const isNotFound = exception instanceof NotFoundException;
+    if (!isNotFound) {
+      this.logger.debug('Exception error:', exception);
+    }
 
     let status = HttpStatus.INTERNAL_SERVER_ERROR;
     let message = 'Internal Server Error';
@@ -28,7 +34,9 @@ export class AllExceptionFilter implements ExceptionFilter {
       status = exception.getStatus();
       const res = exception.getResponse();
 
-      this.logger.debug(`Exception response: ${JSON.stringify(res)}`);
+      if (!isNotFound) {
+        this.logger.debug(`Exception response: ${JSON.stringify(res)}`);
+      }
 
       if (
         exception instanceof BadRequestException &&
@@ -71,7 +79,9 @@ export class AllExceptionFilter implements ExceptionFilter {
       message,
     };
 
-    this.logger.debug(`Error response: ${JSON.stringify(errorResponse)}`);
+    if (!isNotFound) {
+      this.logger.debug(`Error response: ${JSON.stringify(errorResponse)}`);
+    }
     response.status(status).json(errorResponse);
   }
 
