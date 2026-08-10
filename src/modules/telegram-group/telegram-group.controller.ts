@@ -12,10 +12,22 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { TelegramGroupService } from './telegram-group.service';
-import { CreateTelegramGroupDto } from '@/types/telegram-group';
-import { UpdateTelegramGroupDto } from '@/types/telegram-group';
-import { QueryTelegramGroupDto } from '@/types/telegram-group';
-import { ApiBearerAuth, ApiBody, ApiForbiddenResponse, ApiOkResponse, ApiOperation, ApiParam, ApiQuery, ApiTags } from '@nestjs/swagger';
+import {
+  BulkCreateTelegramGroupDto,
+  CreateTelegramGroupDto,
+  QueryTelegramGroupDto,
+  UpdateTelegramGroupDto,
+} from '@/types/telegram-group';
+import {
+  ApiBearerAuth,
+  ApiBody,
+  ApiForbiddenResponse,
+  ApiOkResponse,
+  ApiOperation,
+  ApiParam,
+  ApiQuery,
+  ApiTags,
+} from '@nestjs/swagger';
 import { UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '@/modules/auth/guards/jwt-auth.guard';
 import { RolesGuard } from '@/modules/auth/guards/roles.guard';
@@ -23,7 +35,7 @@ import { Roles } from '@/modules/auth/decorators/roles.decorator';
 
 @ApiTags('Telegram-groups')
 @ApiBearerAuth()
-@Controller('v1/telegram-groups')
+@Controller('telegram-groups')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class TelegramGroupController {
   constructor(private readonly telegramGroupService: TelegramGroupService) {}
@@ -46,6 +58,23 @@ export class TelegramGroupController {
     return this.telegramGroupService.create(dto);
   }
 
+  @Roles('ADMIN')
+  @Post('bulk')
+  @ApiOperation({
+    summary:
+      'Bulk create/seed telegram groups (ADMIN). ' +
+      'Duplikatlar skipdaduplicates orqali jimjit tashlab yuboriladi.',
+  })
+  @ApiBody({ type: BulkCreateTelegramGroupDto })
+  @ApiOkResponse({
+    description:
+      "Statistika: { received, valid, created, skipped_duplicates, invalid: [{index, reason}] }",
+  })
+  @HttpCode(HttpStatus.OK)
+  async bulkCreate(@Body() dto: BulkCreateTelegramGroupDto) {
+    return this.telegramGroupService.createMany(dto);
+  }
+
   @Roles('ADMIN', 'DISPATCHER')
   @Get()
   @ApiOperation({ summary: 'Get telegram groups with filters' })
@@ -63,7 +92,10 @@ export class TelegramGroupController {
   @ApiOperation({ summary: 'Update telegram group (ADMIN)' })
   @ApiParam({ name: 'id', type: Number })
   @ApiBody({ type: UpdateTelegramGroupDto })
-  async update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateTelegramGroupDto) {
+  async update(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateTelegramGroupDto,
+  ) {
     return this.telegramGroupService.update(id, dto);
   }
 

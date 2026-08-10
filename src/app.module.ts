@@ -43,7 +43,7 @@ import { RequestLoggerInterceptor } from './common/interceptors/request-logger.i
     // }),
     PrismaModule,
     PostsModule,
-    // TelegramGroupModule,
+    TelegramGroupModule,
     // OpenaiModule,
     CronJobModule,
     // TelegramModule,

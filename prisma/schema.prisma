@@ -129,8 +129,18 @@ model LogisticMessage {
 
 model TelegramGroup {
   id        Int      @id @default(autoincrement())
-  username  String   @unique
+  // Ochiq guruh/kanal uchun @username (belgisiz). Yopiq guruhlarda `null`
+  // bo'lishi mumkin — o'sha holda `chatId` majburiy.
+  username  String?  @unique
+  // Telegram peer id (masalan -1001825091915). Yopiq guruhlarga xabar yuborish
+  // uchun kerak — MTPro worker `chatId` yoki `username`ni qabul qiladi.
+  // BigInt: Int32 sig'imidan katta bo'lishi mumkin.
+  chatId    BigInt?  @unique
   title     String?
+  // Telethon dialog turi: "channel" | "group" | "supergroup". Ma'lumot uchun.
+  type      String?
+  // Yig'ish paytidagi a'zolar soni. Statistika va prioritizatsiya uchun.
+  members   Int?
   isActive  Boolean  @default(true)
   // Guruh Telegram slow-mode sekundlari (ma'lum bo'lsa) — kelajakda Python
   // worker global INTER_GROUP_DELAY o'rniga shu qiymatga qarab kutishi mumkin.
@@ -138,6 +148,8 @@ model TelegramGroup {
   slowModeSec Int?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([isActive])
 }
 
 // Guruhga jo'natishda xatolik uchragan holatda 24 soatga blocklanadi.
