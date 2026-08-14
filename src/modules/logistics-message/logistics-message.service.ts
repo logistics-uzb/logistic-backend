@@ -533,19 +533,29 @@ export class PostsService {
     const { text, route, metaData, isComplete, tag } = params;
 
     // Routing:
-    //  1) AI vehicleType 'isuzu' bo'lsa → TELEGRAM_TOPIC_ID_ISUZU
-    //  2) Aks holda: complete → 17903, incomplete → 17906
-    const isuzuTopicRaw = process.env.TELEGRAM_TOPIC_ID_ISUZU;
-    const isuzuTopicId = isuzuTopicRaw ? Number(isuzuTopicRaw) : null;
+    //  1) AI vehicleType 'isuzu' yoki 'chakman' bo'lsa → alohida topic
+    //     (TELEGRAM_TOPIC_ID_ISUZU / TELEGRAM_TOPIC_ID_CHAKMAN env'dan).
+    //  2) Boshqa barcha turlar (tent, ref, labo, locomative_truck va h.k.) →
+    //     umumiy topic: complete → 17903, incomplete → 17906.
+    //
+    // Yangi tur qo'shish kerak bo'lsa shu map'ga qatorm qo'shib
+    // `.env`ga `TELEGRAM_TOPIC_ID_<TYPE>=<id>` yozing.
+    const VEHICLE_TOPIC_ENV: Record<string, string | undefined> = {
+      isuzu:   process.env.TELEGRAM_TOPIC_ID_ISUZU,
+      chakman: process.env.TELEGRAM_TOPIC_ID_CHAKMAN,
+    };
 
     const vehicleType = String(metaData?.vehicleType ?? '').toLowerCase();
-    const isIsuzu = vehicleType.includes('isuzu');
+    const matched = Object.entries(VEHICLE_TOPIC_ENV).find(
+      ([type, topicEnv]) =>
+        topicEnv && vehicleType.includes(type),
+    );
 
     let topicId: number;
     let label: string;
-    if (isIsuzu && isuzuTopicId) {
-      topicId = isuzuTopicId;
-      label = `isuzu (${isComplete ? 'complete' : 'incomplete'})`;
+    if (matched) {
+      topicId = Number(matched[1]);
+      label = `${matched[0]} (${isComplete ? 'complete' : 'incomplete'})`;
     } else {
       topicId = isComplete ? 17903 : 17906;
       label = isComplete ? 'complete load' : 'incomplete load';
