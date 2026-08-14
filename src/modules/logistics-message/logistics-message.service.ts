@@ -314,17 +314,16 @@ export class PostsService {
             `${subTag} SAVED id=${savedRow.id} aiStatus=${savedRow.aiStatus}`
           );
 
-          // Ichki Telegram alert (moderator topic) — O'CHIRILGAN.
-          // Post baribir DB'ga saqlangan, front qidiruvda topadi.
-          // if (effectiveIsLoad) {
-          //   await this.sendLoadAlert({
-          //     text,
-          //     route: load?.route ?? {},
-          //     metaData: { ...(load?.metaData ?? {}), phone_number: phone },
-          //     isComplete,
-          //     tag: subTag,
-          //   });
-          // }
+          // Ichki Telegram alert (moderator topic)
+          if (effectiveIsLoad) {
+            await this.sendLoadAlert({
+              text,
+              route: load?.route ?? {},
+              metaData: { ...(load?.metaData ?? {}), phone_number: phone },
+              isComplete,
+              tag: subTag,
+            });
+          }
         }
 
         this.logger.log(
@@ -474,18 +473,17 @@ export class PostsService {
       );
 
       // -------------------------------------------------------------------
-      // STEP 8 — Ichki Telegram alert (moderator topic) — O'CHIRILGAN.
-      // Post DB'ga saqlangan, front qidiruvda topadi.
+      // STEP 8 — Ichki Telegram alert (moderator topic)
       // -------------------------------------------------------------------
-      // if (effectiveIsLoad) {
-      //   await this.sendLoadAlert({
-      //     text,
-      //     route: openaiResponse?.route ?? {},
-      //     metaData: openaiResponse?.metaData ?? {},
-      //     isComplete,
-      //     tag,
-      //   });
-      // }
+      if (effectiveIsLoad) {
+        await this.sendLoadAlert({
+          text,
+          route: openaiResponse?.route ?? {},
+          metaData: openaiResponse?.metaData ?? {},
+          isComplete,
+          tag,
+        });
+      }
 
       this.logger.log(
         `${tag} DONE id=${savedMessage.id} aiStatus=${savedMessage.aiStatus} in ${elapsed()}`
@@ -533,8 +531,25 @@ export class PostsService {
     tag: string;
   }) {
     const { text, route, metaData, isComplete, tag } = params;
-    const topicId = isComplete ? 17903 : 17906;
-    const label = isComplete ? 'complete load' : 'incomplete load';
+
+    // Routing:
+    //  1) AI vehicleType 'isuzu' bo'lsa → TELEGRAM_TOPIC_ID_ISUZU
+    //  2) Aks holda: complete → 17903, incomplete → 17906
+    const isuzuTopicRaw = process.env.TELEGRAM_TOPIC_ID_ISUZU;
+    const isuzuTopicId = isuzuTopicRaw ? Number(isuzuTopicRaw) : null;
+
+    const vehicleType = String(metaData?.vehicleType ?? '').toLowerCase();
+    const isIsuzu = vehicleType.includes('isuzu');
+
+    let topicId: number;
+    let label: string;
+    if (isIsuzu && isuzuTopicId) {
+      topicId = isuzuTopicId;
+      label = `isuzu (${isComplete ? 'complete' : 'incomplete'})`;
+    } else {
+      topicId = isComplete ? 17903 : 17906;
+      label = isComplete ? 'complete load' : 'incomplete load';
+    }
 
     this.logger.warn(`${tag} telegram alert → topic=${topicId} (${label})`);
 
@@ -542,6 +557,12 @@ export class PostsService {
 *Asl xabar:*
 \`\`\`
 ${text}
+\`\`\`
+
+*AI xom javobi (findRoute'gacha):*
+\`\`\`
+• rawFrom: ${route?.rawFrom ?? '❌ yo‘q'}
+• rawTo:   ${route?.rawTo ?? '❌ yo‘q'}
 \`\`\`
 
 *Aniqlangan ma'lumotlar:*

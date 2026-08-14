@@ -104,6 +104,9 @@ export class OpenaiService {
       isMulti: false,
       classifieredMessage,
       route: {
+        // AI'ning xom qiymati (findRoute'gacha) — Telegram alert va tahlil uchun
+        rawFrom: data?.rawFrom ?? null,
+        rawTo: data?.rawTo ?? null,
         fromCountry: data?.from?.country?.indexedName ?? null,
         toCountry: data?.to?.country?.indexedName ?? null,
         fromRegion: data?.from?.region?.indexedName ?? null,
@@ -390,6 +393,9 @@ export class OpenaiService {
       const to = await findRoute(rawResult.to);
 
       return {
+        // AI'ning xom `from`/`to` matni (findRoute'gacha) — diagnostika uchun
+        rawFrom: rawResult?.from ?? null,
+        rawTo: rawResult?.to ?? null,
         from: {
           country: from?.country,
           region: from?.region,
@@ -412,6 +418,8 @@ export class OpenaiService {
     } catch (error) {
       console.error('Xatolik:', error);
       return {
+        rawFrom: null,
+        rawTo: null,
         from: null,
         to: null,
         title: null,
@@ -488,6 +496,9 @@ export class OpenaiService {
 
         return {
           route: {
+            // AI'ning xom qiymati (findRoute'gacha) — diagnostika uchun
+            rawFrom: raw?.from ?? null,
+            rawTo: raw?.to ?? null,
             fromCountry: from?.country?.indexedName ?? null,
             toCountry: to?.country?.indexedName ?? null,
             fromRegion: from?.region?.indexedName ?? null,
