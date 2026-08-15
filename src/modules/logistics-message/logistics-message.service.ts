@@ -2150,16 +2150,6 @@ ${text}
       lines.push(`💰  To'lov turi :  ${paymentTypeUz}`);
     }
 
-    if (
-      s.advancePayment != null &&
-      !isNaN(Number(s.advancePayment)) &&
-      Number(s.advancePayment) > 0
-    ) {
-      lines.push(
-        `💵  Avans       :  ${formatMoney(Number(s.advancePayment))}${currencyUz ? ' ' + currencyUz : ''}`,
-      );
-    }
-
     if (s.pickupDate) {
       lines.push(`📅  Yuklash     :  ${String(s.pickupDate)}`);
     }
