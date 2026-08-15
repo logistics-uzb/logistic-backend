@@ -1341,7 +1341,7 @@ ${text}
     // 2) Xabar matnini quramiz (DB'ga saqlash uchun kerak, allowlist'siz ham)
     const message = body.isMessage
       ? body.message
-      : this.buildTelegramMessage(body, dispatcher.phone);
+      : await this.buildTelegramMessage(body, dispatcher.phone);
 
     // 3) Bazaga saqlaymiz — asosiy vazifa (hamma dispatcher uchun)
     const saved = await this.persistDispatcherPost(
@@ -2081,37 +2081,96 @@ ${text}
     });
   }
 
-  private buildTelegramMessage(
+  private async buildTelegramMessage(
     body: SendTelegramStructuredDto,
     phone: string
-  ): string {
+  ): Promise<string> {
     const s = body;
+
+    // ── Yo'nalish (indexedName → display nom) ──────────────────────────────
+    const [fromCountryName, toCountryName, fromRegionInfo, toRegionInfo] =
+      await Promise.all([
+        s.countryFrom
+          ? this.getCountryNameByIndexedName(routeData, s.countryFrom)
+          : Promise.resolve(null),
+        s.countryTo
+          ? this.getCountryNameByIndexedName(routeData, s.countryTo)
+          : Promise.resolve(null),
+        s.regionFrom
+          ? this.getRegionInfoByIndexedName(routeData, s.regionFrom)
+          : Promise.resolve(null),
+        s.regionTo
+          ? this.getRegionInfoByIndexedName(routeData, s.regionTo)
+          : Promise.resolve(null),
+      ]);
+
+    const fromDisplay = [
+      fromRegionInfo?.regionName,
+      fromCountryName,
+    ]
+      .filter(Boolean)
+      .join(', ');
+    const toDisplay = [toRegionInfo?.regionName, toCountryName]
+      .filter(Boolean)
+      .join(', ');
+
+    // ── Enum'larni o'zbekchaga tarjima ─────────────────────────────────────
+    const cargoUnitUz = translateCargoUnit(s.cargoUnit);
+    const vehicleTypeUz = translateVehicleType(s.vehicleType);
+    const paymentTypeUz = translatePaymentType(s.paymentType);
+    const currencyUz = translateCurrency(s.paymentCurrency);
+
+    // ── Xabar tuzish ───────────────────────────────────────────────────────
+    // Diqqat: MTPro Telethon `send_message` parse_mode BERMAYDI — sof matn.
+    // Shuning uchun HTML/Markdown tag'lar ishlatilmaydi, chiroyni emoji va
+    // bo'shliqlar bilan beramiz.
     const lines: string[] = [];
 
-    if (s.title) lines.push(`📦 ${s.title}!`);
-    const from = [s.countryFrom, s.regionFrom].filter(Boolean).join(', ');
-    if (from) lines.push(`📍 From: ${from}`);
-    const to = [s.countryTo, s.regionTo].filter(Boolean).join(', ');
-    if (to) lines.push(`➡️ To: ${to}`);
-    if (s.weight || s.cargoUnit)
-      lines.push(
-        `⚖️ Weight: ${[s.weight, s.cargoUnit].filter(Boolean).join(' ')}`
-      );
-    if (s.vehicleType || s.vehicleBodyType)
-      lines.push(
-        `🚚 Vehicle: ${[s.vehicleType, s.vehicleBodyType].filter(Boolean).join(' / ')}`
-      );
-    if (s.paymentAmount || s.paymentCurrency || s.paymentType) {
-      const amount = [s.paymentAmount, (s.paymentCurrency || '').toUpperCase()]
-        .filter(Boolean)
-        .join(' ');
-      const pay = s.paymentType ? ` (${s.paymentType})` : '';
-      lines.push(`💰 Payment: ${amount}${pay}`);
+    lines.push('🚛  YANGI YUK  🚛');
+    lines.push('━━━━━━━━━━━━━━━━━━━');
+
+    if (s.title) lines.push(`📦  Yuk         :  ${s.title}`);
+
+    if (fromDisplay) lines.push(`🅰️  Qayerdan   :  ${fromDisplay}`);
+    if (toDisplay)   lines.push(`🅱️  Qayerga    :  ${toDisplay}`);
+
+    if (s.weight != null && !isNaN(Number(s.weight))) {
+      const weightStr = `${Number(s.weight)} ${cargoUnitUz ?? ''}`.trim();
+      lines.push(`⚖️  Og'irligi   :  ${weightStr}`);
     }
-    if (s.capacity) lines.push(`📦 Capacity: ${s.capacity}`);
-    if (s.pickupDate) lines.push(`📅 Pickup: ${s.pickupDate}`);
-    if (phone) lines.push(`📞 Phone: ${phone}`);
-    if (s.description) lines.push(`📝 ${s.description}`);
+
+    if (vehicleTypeUz) lines.push(`🚚  Transport   :  ${vehicleTypeUz}`);
+
+    if (s.paymentAmount != null && !isNaN(Number(s.paymentAmount))) {
+      const amount = formatMoney(Number(s.paymentAmount));
+      const currency = currencyUz ? ` ${currencyUz}` : '';
+      const typeStr = paymentTypeUz ? `  (${paymentTypeUz})` : '';
+      lines.push(`💰  To'lov      :  ${amount}${currency}${typeStr}`);
+    } else if (paymentTypeUz) {
+      lines.push(`💰  To'lov turi :  ${paymentTypeUz}`);
+    }
+
+    if (
+      s.advancePayment != null &&
+      !isNaN(Number(s.advancePayment)) &&
+      Number(s.advancePayment) > 0
+    ) {
+      lines.push(
+        `💵  Avans       :  ${formatMoney(Number(s.advancePayment))}${currencyUz ? ' ' + currencyUz : ''}`,
+      );
+    }
+
+    if (s.pickupDate) {
+      lines.push(`📅  Yuklash     :  ${String(s.pickupDate)}`);
+    }
+
+    if (s.description) {
+      lines.push('');
+      lines.push(`📝  ${s.description}`);
+    }
+
+    lines.push('━━━━━━━━━━━━━━━━━━━');
+    if (phone) lines.push(`📞  Aloqa       :  ${phone}`);
 
     return lines.join('\n');
   }
@@ -2413,4 +2472,71 @@ ${text}
       deletedCount,
     };
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Telegram xabar tuzuvchilar uchun yordamchilar (buildTelegramMessage'da)
+// ═══════════════════════════════════════════════════════════════════════════
+
+function formatMoney(n: number): string {
+  // 5000000 → "5 000 000"
+  return n.toLocaleString('ru-RU').replace(/,/g, ' ').replace(/ /g, ' ');
+}
+
+function translateCargoUnit(v: string | null | undefined): string | null {
+  if (!v) return null;
+  const key = String(v).toLowerCase();
+  const map: Record<string, string> = {
+    tons: 'tonna',
+    ton: 'tonna',
+    kg: 'kg',
+    pallet: 'palet',
+    pallets: 'palet',
+    m3: 'kub',
+    kub: 'kub',
+  };
+  return map[key] ?? v;
+}
+
+function translateVehicleType(v: string | null | undefined): string | null {
+  if (!v) return null;
+  const key = String(v).toLowerCase();
+  const map: Record<string, string> = {
+    tent: 'Tent',
+    fura: 'Tent (fura)',
+    ref: 'Refrijerator',
+    isuzu: 'Isuzu',
+    gazel: 'Isuzu',
+    chakman: 'Chakman',
+    labo: 'Labo',
+    locomative_truck: 'Paravoz',
+    paravoz: 'Paravoz',
+  };
+  return map[key] ?? v;
+}
+
+function translatePaymentType(v: string | null | undefined): string | null {
+  if (!v) return null;
+  const key = String(v).toLowerCase();
+  const map: Record<string, string> = {
+    cash: 'Naqd',
+    nakd: 'Naqd',
+    online: 'Perechis',
+    perechis: 'Perechis',
+    combo: 'Aralash',
+  };
+  return map[key] ?? v;
+}
+
+function translateCurrency(v: string | null | undefined): string | null {
+  if (!v) return null;
+  const key = String(v).toLowerCase();
+  const map: Record<string, string> = {
+    usd: 'USD',
+    sum: "so'm",
+    uzs: "so'm",
+    rub: 'RUB',
+    kzt: 'KZT',
+  };
+  return map[key] ?? String(v).toUpperCase();
 }
