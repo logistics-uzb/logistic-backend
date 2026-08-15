@@ -1354,7 +1354,10 @@ ${text}
     // 4) Allowlist — hozircha faqat bitta raqam MTProto orqali haqiqiy jo'natishga
     // ega. Qolgan dispatcher'lar uchun post DB'ga saqlanadi (PENDING) lekin
     // hech qanday guruhga xabar ketmaydi. Testlash tugagach allowlist kengaytiriladi.
-    const ALLOWED_DISPATCHER_PHONES = new Set(['+998993002399']);
+    const ALLOWED_DISPATCHER_PHONES = new Set([
+      '+998993002399',
+      '+998933843484',
+    ]);
     const normalizedPhone = (dispatcher.phone ?? '').replace(/\s+/g, '');
     if (!ALLOWED_DISPATCHER_PHONES.has(normalizedPhone)) {
       this.logger.log(
