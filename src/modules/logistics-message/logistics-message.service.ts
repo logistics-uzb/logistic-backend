@@ -469,14 +469,12 @@ export class PostsService {
 
       // -------------------------------------------------------------------
       // STEP 8 — Ichki Telegram alert (moderator topic)
-      // Qoida:
-      //   - effectiveIsLoad (isLoad + hasPhone + isComplete) → alert
-      //   - isuzu/chakman + hasPhone → alert (isComplete=false bo'lsa ham,
-      //     shu topiclar uchun to'liq bo'lmagan yuk ham ko'rinishi kerak)
-      const isSpecialVehicle = isSpecialVehicleType(
-        openaiResponse?.metaData?.vehicleType,
-      );
-      const shouldAlert = effectiveIsLoad || (hasPhone && isSpecialVehicle);
+      // Qoida: yuk (isLoad) va telefon bor bo'lsa — alert yuboriladi.
+      // `isComplete` bu yerda tekshirilmaydi — u faqat sendLoadAlert ichida
+      // qaysi topic'ga borishini aniqlaydi (complete → 17903/isuzu/chakman;
+      // incomplete → 351065/isuzu_incomplete/chakman_incomplete).
+      const shouldAlert =
+        openaiResponse.classifieredMessage.isLoad && hasPhone;
       if (shouldAlert) {
         await this.sendLoadAlert({
           text,
@@ -2700,17 +2698,6 @@ ${text}
 function formatMoney(n: number): string {
   // 5000000 → "5 000 000"
   return n.toLocaleString('ru-RU').replace(/,/g, ' ').replace(/ /g, ' ');
-}
-
-/**
- * AI qaytargan vehicleType — isuzu yoki chakman'mi tekshiradi.
- * Bu turlarga alohida topic bor (TELEGRAM_TOPIC_ID_ISUZU / _CHAKMAN),
- * shuning uchun `isComplete=false` bo'lsa ham alert yuboriladi.
- */
-function isSpecialVehicleType(v: string | null | undefined): boolean {
-  if (!v) return false;
-  const key = String(v).toLowerCase();
-  return key.includes('isuzu') || key.includes('chakman');
 }
 
 function formatMoneyShort(n: number, currency: string | null): string {
