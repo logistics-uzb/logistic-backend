@@ -314,16 +314,11 @@ export class PostsService {
             `${subTag} SAVED id=${savedRow.id} aiStatus=${savedRow.aiStatus}`
           );
 
-          // Ichki Telegram alert (moderator topic)
-          if (effectiveIsLoad) {
-            await this.sendLoadAlert({
-              text,
-              route: load?.route ?? {},
-              metaData: { ...(load?.metaData ?? {}), phone_number: phone },
-              isComplete,
-              tag: subTag,
-            });
-          }
+          // Multi-load (katta xabar) — hozircha alert yubormaymiz.
+          // Post baribir DB'ga saqlanadi va qidiruvda topiladi.
+          this.logger.debug(
+            `${subTag} multi-load — alert skip qilindi (katta xabar policy)`,
+          );
         }
 
         this.logger.log(
@@ -474,8 +469,15 @@ export class PostsService {
 
       // -------------------------------------------------------------------
       // STEP 8 — Ichki Telegram alert (moderator topic)
-      // -------------------------------------------------------------------
-      if (effectiveIsLoad) {
+      // Qoida:
+      //   - effectiveIsLoad (isLoad + hasPhone + isComplete) → alert
+      //   - isuzu/chakman + hasPhone → alert (isComplete=false bo'lsa ham,
+      //     shu topiclar uchun to'liq bo'lmagan yuk ham ko'rinishi kerak)
+      const isSpecialVehicle = isSpecialVehicleType(
+        openaiResponse?.metaData?.vehicleType,
+      );
+      const shouldAlert = effectiveIsLoad || (hasPhone && isSpecialVehicle);
+      if (shouldAlert) {
         await this.sendLoadAlert({
           text,
           route: openaiResponse?.route ?? {},
@@ -532,32 +534,60 @@ export class PostsService {
   }) {
     const { text, route, metaData, isComplete, tag } = params;
 
-    // Routing:
-    //  1) AI vehicleType 'isuzu' yoki 'chakman' bo'lsa → alohida topic
-    //     (TELEGRAM_TOPIC_ID_ISUZU / TELEGRAM_TOPIC_ID_CHAKMAN env'dan).
-    //  2) Boshqa barcha turlar (tent, ref, labo, locomative_truck va h.k.) →
-    //     umumiy topic: complete → 17903, incomplete → 17906.
+    // Routing — env'dan boshqariladi:
+    //   TELEGRAM_TOPIC_ID_ISUZU              — isuzu (complete)
+    //   TELEGRAM_TOPIC_ID_ISUZU_INCOMPLETE   — isuzu (incomplete)
+    //   TELEGRAM_TOPIC_ID_CHAKMAN            — chakman (complete)
+    //   TELEGRAM_TOPIC_ID_CHAKMAN_INCOMPLETE — chakman (incomplete)
+    //   TELEGRAM_TOPIC_ID_DEFAULT_COMPLETE   — boshqa hamma vehicleType (complete)
+    //   TELEGRAM_TOPIC_ID_DEFAULT_INCOMPLETE — boshqa hamma vehicleType (incomplete)
+    // Env yo'q bo'lsa default: 17903 (complete) va 17906 (incomplete).
     //
-    // Yangi tur qo'shish kerak bo'lsa shu map'ga qatorm qo'shib
-    // `.env`ga `TELEGRAM_TOPIC_ID_<TYPE>=<id>` yozing.
-    const VEHICLE_TOPIC_ENV: Record<string, string | undefined> = {
-      isuzu:   process.env.TELEGRAM_TOPIC_ID_ISUZU,
-      chakman: process.env.TELEGRAM_TOPIC_ID_CHAKMAN,
+    // Yangi vehicle turini qo'shish uchun VEHICLE_TOPIC_MAP'ga qator +
+    // .env'ga tegishli 2 ta o'zgaruvchi yozing.
+    const defaultCompleteId = Number(
+      process.env.TELEGRAM_TOPIC_ID_DEFAULT_COMPLETE ?? '17903',
+    );
+    const defaultIncompleteId = Number(
+      process.env.TELEGRAM_TOPIC_ID_DEFAULT_INCOMPLETE ?? '17906',
+    );
+    const defaultTopicId = isComplete
+      ? defaultCompleteId
+      : defaultIncompleteId;
+
+    const VEHICLE_TOPIC_MAP: Record<
+      string,
+      { complete?: string; incomplete?: string }
+    > = {
+      isuzu: {
+        complete:   process.env.TELEGRAM_TOPIC_ID_ISUZU,
+        incomplete: process.env.TELEGRAM_TOPIC_ID_ISUZU_INCOMPLETE,
+      },
+      chakman: {
+        complete:   process.env.TELEGRAM_TOPIC_ID_CHAKMAN,
+        incomplete: process.env.TELEGRAM_TOPIC_ID_CHAKMAN_INCOMPLETE,
+      },
     };
 
     const vehicleType = String(metaData?.vehicleType ?? '').toLowerCase();
-    const matched = Object.entries(VEHICLE_TOPIC_ENV).find(
-      ([type, topicEnv]) =>
-        topicEnv && vehicleType.includes(type),
+    const matchedEntry = Object.entries(VEHICLE_TOPIC_MAP).find(([type]) =>
+      vehicleType.includes(type),
     );
 
     let topicId: number;
     let label: string;
-    if (matched) {
-      topicId = Number(matched[1]);
-      label = `${matched[0]} (${isComplete ? 'complete' : 'incomplete'})`;
+    if (matchedEntry) {
+      const [type, topics] = matchedEntry;
+      const wanted = isComplete ? topics.complete : topics.incomplete;
+      if (wanted) {
+        topicId = Number(wanted);
+        label = `${type} (${isComplete ? 'complete' : 'incomplete'})`;
+      } else {
+        topicId = defaultTopicId;
+        label = `${type} (${isComplete ? 'complete' : 'incomplete'}) → default`;
+      }
     } else {
-      topicId = isComplete ? 17903 : 17906;
+      topicId = defaultTopicId;
       label = isComplete ? 'complete load' : 'incomplete load';
     }
 
@@ -1486,6 +1516,190 @@ ${text}
   }
 
   /**
+   * Mavjud LogisticMessage'ni Telegram guruhlarga QAYTA yuborish.
+   * Xuddi shu matn (DB'dagi `text` ustuni) va aktiv guruhlar bilan MTPro
+   * navbatiga qayta qo'shiladi.
+   *
+   * Auth:
+   *  - ADMIN — istalgan post
+   *  - DISPATCHER — faqat o'zi yaratgan post
+   */
+  async resendToTelegram(
+    id: number,
+    userId: number,
+    role: 'ADMIN' | 'DISPATCHER',
+  ) {
+    // 1) Post mavjudmi
+    const post = await this.prisma.logisticMessage.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        text: true,
+        source: true,
+        createdById: true,
+        sendStatus: true,
+      },
+    });
+    if (!post) {
+      throw new NotFoundException(`Post id=${id} topilmadi`);
+    }
+
+    // 2) Auth: DISPATCHER faqat o'z postini qayta yuborishi mumkin
+    if (role === 'DISPATCHER' && post.createdById !== userId) {
+      throw new ForbiddenException(
+        "Bu post sizniki emas — faqat o'z postingizni qayta yuborishingiz mumkin",
+      );
+    }
+
+    // 3) Post hozir navbatda / bajarilayotgan bo'lsa — konflikt
+    if (post.sendStatus === 'QUEUED') {
+      throw new BadRequestException(
+        "Post allaqachon navbatda (QUEUED). Tugagach qayta uruning.",
+      );
+    }
+
+    // 4) Foydalanuvchi telefonini olish (allowlist tekshiruvi uchun)
+    const dispatcher = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, phone: true },
+    });
+    if (!dispatcher?.phone) {
+      throw new BadRequestException(
+        'Dispatcher account has no phone on file',
+      );
+    }
+
+    const ALLOWED_DISPATCHER_PHONES = new Set([
+      '+998993002399',
+      '+998933843484',
+    ]);
+    const normalizedPhone = (dispatcher.phone ?? '').replace(/\s+/g, '');
+    if (
+      role !== 'ADMIN' &&
+      !ALLOWED_DISPATCHER_PHONES.has(normalizedPhone)
+    ) {
+      this.logger.log(
+        `Resend skip: dispatcher phone=${normalizedPhone} allowlist'da yo'q (post ${id})`,
+      );
+      return {
+        success: true,
+        savedId: id,
+        sendStatus: 'PENDING',
+        note: "Dispatcher allowlist'da yo'q — qayta yuborish o'tkazilmadi",
+      };
+    }
+
+    // 5) Aktiv guruhlar (sendToTelegram bilan bir xil mantiq)
+    const now = new Date();
+    const [activeGroups, blocked] = await Promise.all([
+      this.prisma.telegramGroup.findMany({
+        where: { isActive: true },
+        select: { username: true, chatId: true },
+      }),
+      this.prisma.blockedGroup.findMany({
+        where: { unblockAt: { gt: now } },
+        select: { username: true },
+      }),
+    ]);
+
+    const blockedSet = new Set(blocked.map((b) => b.username));
+    const groupTargets: string[] = activeGroups
+      .map((g) => {
+        if (g.username) {
+          if (blockedSet.has(g.username)) return null;
+          return g.username;
+        }
+        if (g.chatId != null) return g.chatId.toString();
+        return null;
+      })
+      .filter((x): x is string => !!x);
+
+    if (groupTargets.length === 0) {
+      throw new BadRequestException(
+        'No active telegram groups available (all blocked or none configured)',
+      );
+    }
+
+    // 6) MTPro'ga navbatga qo'shish
+    const mtprotoUrl =
+      this.configService.get<string>('MTPROTO_SERVICE_URL') ||
+      this.configService.get<string>('PYTHON_TELETHON_API_URL');
+    const sharedSecret = this.configService.get<string>('MTPROTO_SHARED_SECRET');
+    const publicBaseUrl = this.configService.get<string>('PUBLIC_BASE_URL');
+
+    if (!mtprotoUrl || !sharedSecret) {
+      this.logger.warn(
+        `MTPROTO_* env yo'q — resend skip (post ${id})`,
+      );
+      return {
+        success: true,
+        savedId: id,
+        sendStatus: post.sendStatus,
+        note: 'MTProto service not configured',
+      };
+    }
+
+    const callbackUrl = `${(publicBaseUrl ?? '').replace(/\/$/, '')}/v1/internal/send-result`;
+
+    // Avvalgi natijalarni tozalab, QUEUED holatiga o'tkazamiz
+    await this.prisma.logisticMessage.update({
+      where: { id },
+      data: {
+        sendStatus: 'QUEUED',
+        queuedAt: new Date(),
+        sendStartedAt: null,
+        sendFinishedAt: null,
+        sendResults: undefined as any,
+      },
+    });
+
+    try {
+      await axios.post(
+        `${mtprotoUrl.replace(/\/$/, '')}/enqueue`,
+        {
+          id,
+          message: post.text,
+          groups: groupTargets,
+          callback_url: callbackUrl,
+        },
+        {
+          headers: { 'X-Internal-Secret': sharedSecret },
+          timeout: 10_000,
+        },
+      );
+
+      this.logger.log(
+        `Post ${id} QAYTA navbatga qo'shildi (${groupTargets.length} ta guruh, by=${normalizedPhone})`,
+      );
+
+      return {
+        success: true,
+        savedId: id,
+        sendStatus: 'QUEUED',
+        groupsCount: groupTargets.length,
+        resent: true,
+      };
+    } catch (error: any) {
+      this.logger.error(
+        `Resend /enqueue xatosi (post ${id}): ${error?.message}`,
+      );
+      await this.prisma.logisticMessage.update({
+        where: { id },
+        data: {
+          sendStatus: 'FAILED',
+          sendResults: {
+            error: 'mtproto_service_unavailable',
+            detail: error?.message ?? 'unknown',
+          },
+        },
+      });
+      throw new BadRequestException(
+        'MTProto service unavailable — resend failed',
+      );
+    }
+  }
+
+  /**
    * Python MTProto worker'i yuborgan natijalar.
    * `POST /v1/internal/send-result` orqali chaqiriladi.
    *
@@ -2121,46 +2335,61 @@ ${text}
     const currencyUz = translateCurrency(s.paymentCurrency);
 
     // ── Xabar tuzish ───────────────────────────────────────────────────────
-    // Diqqat: MTPro Telethon `send_message` parse_mode BERMAYDI — sof matn.
-    // Shuning uchun HTML/Markdown tag'lar ishlatilmaydi, chiroyni emoji va
-    // bo'shliqlar bilan beramiz.
+    // Sof matn (MTPro `send_message` parse_mode bermaydi). Kompakt shakl —
+    // label'lar yo'q, faqat emoji + qiymat. Telegram phone raqamini avtomatik
+    // link qiladi (tap qilib qo'ng'iroq).
+    //
+    // Format:
+    //   🟢 Samarqand - Katta qo'rg'on
+    //   🟣 Xorazm
+    //   📦 Tualet bumaga
+    //   ⚖️ 10 tonna
+    //   🛻 Tent
+    //   💰 4,5 mln so'm
+    //
+    //   +998993002399
     const lines: string[] = [];
 
-    lines.push('🚛  YANGI YUK  🚛');
-    lines.push('━━━━━━━━━━━━━━━━━━━');
+    // Manzil — faqat viloyat (yoki mamlakat, viloyat yo'q bo'lsa)
+    const fromShort =
+      fromRegionInfo?.regionName ?? fromCountryName ?? null;
+    const toShort = toRegionInfo?.regionName ?? toCountryName ?? null;
+    if (fromShort) lines.push(`🟢 ${fromShort}`);
+    if (toShort) lines.push(`🟣 ${toShort}`);
 
-    if (s.title) lines.push(`📦  Yuk         :  ${s.title}`);
-
-    if (fromDisplay) lines.push(`🅰️  Qayerdan   :  ${fromDisplay}`);
-    if (toDisplay)   lines.push(`🅱️  Qayerga    :  ${toDisplay}`);
+    if (s.title) lines.push(`📦 ${s.title}`);
 
     if (s.weight != null && !isNaN(Number(s.weight))) {
       const weightStr = `${Number(s.weight)} ${cargoUnitUz ?? ''}`.trim();
-      lines.push(`⚖️  Og'irligi   :  ${weightStr}`);
+      lines.push(`⚖️ ${weightStr}`);
     }
 
-    if (vehicleTypeUz) lines.push(`🚚  Transport   :  ${vehicleTypeUz}`);
+    if (vehicleTypeUz) lines.push(`🛻 ${vehicleTypeUz}`);
 
     if (s.paymentAmount != null && !isNaN(Number(s.paymentAmount))) {
-      const amount = formatMoney(Number(s.paymentAmount));
-      const currency = currencyUz ? ` ${currencyUz}` : '';
-      const typeStr = paymentTypeUz ? `  (${paymentTypeUz})` : '';
-      lines.push(`💰  To'lov      :  ${amount}${currency}${typeStr}`);
+      const amountStr = formatMoneyShort(
+        Number(s.paymentAmount),
+        currencyUz,
+      );
+      const typeStr = paymentTypeUz ? ` (${paymentTypeUz})` : '';
+      lines.push(`💰 ${amountStr}${typeStr}`);
     } else if (paymentTypeUz) {
-      lines.push(`💰  To'lov turi :  ${paymentTypeUz}`);
+      lines.push(`💰 ${paymentTypeUz}`);
     }
 
     if (s.pickupDate) {
-      lines.push(`📅  Yuklash     :  ${String(s.pickupDate)}`);
+      lines.push(`📅 ${String(s.pickupDate)}`);
     }
 
     if (s.description) {
-      lines.push('');
-      lines.push(`📝  ${s.description}`);
+      lines.push(`📝 ${s.description}`);
     }
 
-    lines.push('━━━━━━━━━━━━━━━━━━━');
-    if (phone) lines.push(`📞  Aloqa       :  ${phone}`);
+    // Bo'sh qator + telefon (Telegram avtomatik link qiladi)
+    if (phone) {
+      lines.push('');
+      lines.push(phone);
+    }
 
     return lines.join('\n');
   }
@@ -2471,6 +2700,37 @@ ${text}
 function formatMoney(n: number): string {
   // 5000000 → "5 000 000"
   return n.toLocaleString('ru-RU').replace(/,/g, ' ').replace(/ /g, ' ');
+}
+
+/**
+ * AI qaytargan vehicleType — isuzu yoki chakman'mi tekshiradi.
+ * Bu turlarga alohida topic bor (TELEGRAM_TOPIC_ID_ISUZU / _CHAKMAN),
+ * shuning uchun `isComplete=false` bo'lsa ham alert yuboriladi.
+ */
+function isSpecialVehicleType(v: string | null | undefined): boolean {
+  if (!v) return false;
+  const key = String(v).toLowerCase();
+  return key.includes('isuzu') || key.includes('chakman');
+}
+
+function formatMoneyShort(n: number, currency: string | null): string {
+  const cur = currency ?? '';
+  const isSum = cur === "so'm";
+
+  if (isSum) {
+    if (n >= 1_000_000) {
+      const mln = n / 1_000_000;
+      const str =
+        mln % 1 === 0 ? String(mln) : mln.toFixed(1).replace('.', ',');
+      return `${str} mln so'm`;
+    }
+    if (n >= 100_000) {
+      const ming = Math.round(n / 1000);
+      return `${ming} ming so'm`;
+    }
+  }
+
+  return `${formatMoney(n)}${cur ? ' ' + cur : ''}`.trim();
 }
 
 function translateCargoUnit(v: string | null | undefined): string | null {

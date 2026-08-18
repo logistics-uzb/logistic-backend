@@ -5,6 +5,7 @@ import {
   HttpCode,
   HttpStatus,
   Param,
+  ParseIntPipe,
   Patch,
   Post,
   Delete,
@@ -28,7 +29,7 @@ import {
 } from '@/types/logistics-message';
 import { InternalSecretGuard } from '@/common/guards/internal-secret.guard';
 import { UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiBody, ApiExtraModels, ApiForbiddenResponse, ApiOkResponse, ApiOperation, ApiTags, getSchemaPath } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiBody, ApiExtraModels, ApiForbiddenResponse, ApiOkResponse, ApiOperation, ApiParam, ApiTags, getSchemaPath } from '@nestjs/swagger';
 import {
   BackendPostsQueryDto,
   CreateLogisticMessageDto,
@@ -94,6 +95,27 @@ export class PostsController {
     @Req() req: { user: { userId: number; role: 'ADMIN' | 'DISPATCHER' } }
   ) {
     return this.logisticMessageService.sendToTelegram(body, req.user.userId);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('DISPATCHER', 'ADMIN')
+  @Post(':id/resend')
+  @ApiOperation({
+    summary:
+      'Post-ni Telegram guruhlarga qayta yuborish. Xuddi shu matn va guruhlar bilan MTPro navbatiga qayta qo\'shiladi.',
+  })
+  @ApiParam({ name: 'id', type: Number, description: 'LogisticMessage.id' })
+  @ApiOkResponse({ description: 'Post re-queued to MTPro' })
+  @ApiForbiddenResponse({ description: 'Access denied (not your post)' })
+  async resendToTelegram(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: { user: { userId: number; role: 'ADMIN' | 'DISPATCHER' } }
+  ) {
+    return this.logisticMessageService.resendToTelegram(
+      id,
+      req.user.userId,
+      req.user.role,
+    );
   }
 
   @Post('view-increment')
