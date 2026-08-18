@@ -45,7 +45,7 @@ import { Observable, from, interval, map, switchMap } from 'rxjs';
 @ApiExtraModels(SendTelegramRawDto, SendTelegramStructuredDto)
 @Controller('post')
 export class PostsController {
-  constructor(private readonly logisticMessageService: PostsService) {}
+  constructor(private readonly logisticMessageService: PostsService) { }
 
   @Post()
   @ApiBody({ type: CreateLogisticMessageDto })
@@ -272,3 +272,6 @@ export class PostsController {
   //   return this.logisticMessageService.restore(id, req);
   // }
 }
+
+
+
