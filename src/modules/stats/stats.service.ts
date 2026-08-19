@@ -496,6 +496,137 @@ export class StatsService {
   }
 
   /**
+   * ButtonClick × LogisticMessage.vehicleType bo'yicha soatlik statistika.
+   * Har bucket'da 5 ustun:
+   *   ac      — barcha ButtonClick.type='call' (jami qo'ng'iroq)
+   *   av      — barcha ButtonClick.type='view' (jami ko'rish)
+   *   fura    — vehicleType='tent' post'lariga bosilgan barcha click (tg+call+view)
+   *   isuzu   — vehicleType='isuzu' post'lariga bosilgan barcha click
+   *   chakman — vehicleType='chakman' post'lariga bosilgan barcha click
+   *
+   * Diqqat: `vehicleType='tent'` = fura (AI prompt shunday normalize qiladi:
+   * "fura" → "tent"). Shuning uchun jadval sarlavhasi "F" = tent'lar soni.
+   *
+   * Response getButtonClicksTimeseries bilan bir xil shape'da (points array).
+   */
+  async getButtonClicksByVehicleType(dto: {
+    from?: number;
+    to?: number;
+    bucket?: 'hour' | 'day' | 'month';
+  }) {
+    const bucket = dto.bucket ?? 'hour';
+    const now = Date.now();
+
+    let fromMs = dto.from;
+    const toMs = dto.to ?? now;
+    if (fromMs == null) {
+      const HOUR = 60 * 60 * 1000;
+      const DAY = 24 * HOUR;
+      if (bucket === 'hour') fromMs = now - 24 * HOUR;
+      else if (bucket === 'day') fromMs = now - 30 * DAY;
+      else fromMs = now - 365 * DAY;
+    }
+
+    const fromDate = this.floorTo(new Date(fromMs), bucket);
+    const toDate = this.floorTo(new Date(toMs), bucket);
+    const rangeEnd = this.addOne(toDate, bucket);
+
+    // Bir SQL: har soat + type + vehicleType uchun count.
+    // AC/AV ustunlari uchun vehicleType kerak emas — SQL natijasidan chiqarib olamiz.
+    const rows: Array<{
+      bucket: Date;
+      click_type: string;
+      vehicle_type: string | null;
+      cnt: bigint;
+    }> = await this.prisma.$queryRaw(
+      Prisma.sql`
+        SELECT
+          date_trunc('hour', bc."createdAt") AS bucket,
+          bc."type" AS click_type,
+          LOWER(COALESCE(lm."vehicleType", '')) AS vehicle_type,
+          COUNT(*)::bigint AS cnt
+        FROM "ButtonClick" bc
+        LEFT JOIN "LogisticMessage" lm ON lm.id = bc."loadId"
+        WHERE bc."createdAt" >= ${fromDate}
+          AND bc."createdAt" < ${rangeEnd}
+        GROUP BY bucket, bc."type", vehicle_type
+        ORDER BY bucket ASC
+      `,
+    );
+
+    type Bucket = {
+      ac: number;
+      av: number;
+      fura: number;
+      isuzu: number;
+      chakman: number;
+    };
+    const perBucket = new Map<number, Bucket>();
+
+    const emptyBucket = (): Bucket => ({
+      ac: 0,
+      av: 0,
+      fura: 0,
+      isuzu: 0,
+      chakman: 0,
+    });
+
+    for (const r of rows) {
+      const key = this.floorTo(r.bucket, bucket).getTime();
+      const cur = perBucket.get(key) ?? emptyBucket();
+      const n = Number(r.cnt);
+      const vt = r.vehicle_type ?? '';
+
+      // AC/AV — vehicleType'dan qat'iy nazar
+      if (r.click_type === 'call') cur.ac += n;
+      else if (r.click_type === 'view') cur.av += n;
+
+      // Fura/Isuzu/Chakman — vehicleType filter; barcha click tur (tg+call+view)
+      if (vt.includes('tent')) cur.fura += n;
+      if (vt.includes('isuzu')) cur.isuzu += n;
+      if (vt.includes('chakman')) cur.chakman += n;
+
+      perBucket.set(key, cur);
+    }
+
+    const points: Array<
+      { at: string } & Bucket & { total: number }
+    > = [];
+    const totals: Bucket = emptyBucket();
+
+    for (let d = fromDate; d <= toDate; d = this.addOne(d, bucket)) {
+      const b = perBucket.get(d.getTime()) ?? emptyBucket();
+      points.push({
+        at: this.formatLocalIso(d),
+        ...b,
+        total: b.ac + b.av + b.fura + b.isuzu + b.chakman,
+      });
+      totals.ac += b.ac;
+      totals.av += b.av;
+      totals.fura += b.fura;
+      totals.isuzu += b.isuzu;
+      totals.chakman += b.chakman;
+    }
+
+    return {
+      bucket,
+      timezone: 'Asia/Tashkent',
+      from: this.formatLocalIso(fromDate),
+      to: this.formatLocalIso(toDate),
+      totals: {
+        ...totals,
+        all:
+          totals.ac +
+          totals.av +
+          totals.fura +
+          totals.isuzu +
+          totals.chakman,
+      },
+      points,
+    };
+  }
+
+  /**
    * Birlashgan statistika — barcha metrikani bitta chaqiruv orqali beradi:
    *   view — ButtonClick.type='view' bosishlari (post ko'rilgan)
    *   call — ButtonClick.type='call' bosishlari (qo'ng'iroq tugmasi)

@@ -61,6 +61,16 @@ export class StatsController {
     return this.statsService.getButtonClicksTimeseries(dto);
   }
 
+  @Get('button-clicks-by-vehicle-type')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      "ButtonClick × LogisticMessage.vehicleType bo'yicha statistika. Har bucket'da 5 ustun: ac (jami call), av (jami view), fura (tent post'lariga click), isuzu, chakman.",
+  })
+  async buttonClicksByVehicleType(@Query() dto: GetButtonClicksDto) {
+    return this.statsService.getButtonClicksByVehicleType(dto);
+  }
+
   @Get('all-in-one')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
